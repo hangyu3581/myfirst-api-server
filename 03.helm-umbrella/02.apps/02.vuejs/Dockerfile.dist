@@ -1,0 +1,12 @@
+# 로컬에서 미리 빌드된 dist를 직접 복사 (빌드 스테이지 제외)
+# 사전 조건: 이 Dockerfile을 사용하기 전에 로컬에서 `npm run build` 를 실행해야 합니다.
+FROM nginx:stable-alpine
+
+# nginx 설정 복사
+COPY default.conf /etc/nginx/conf.d/
+
+# 로컬의 ./dist를 nginx html 디렉토리에 직접 복사
+COPY dist/ /usr/share/nginx/html/
+
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]

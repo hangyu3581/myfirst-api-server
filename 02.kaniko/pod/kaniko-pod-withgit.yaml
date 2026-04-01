@@ -1,0 +1,55 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sk199-kaniko-pod-springboot
+  namespace: skala-practice
+  labels:
+    app: sk199
+spec:
+  # Init Container: Maven 빌드
+  initContainers:
+  - name: build
+    image: maven:3.8.5-openjdk-17
+    workingDir: /workspace
+    command: ["/bin/bash"]
+    args:
+      - -c
+      - |
+        echo "=== Git Clone 시작 ==="
+        git clone https://YOUR_GITHUB_USERNAME:YOUR_GITHUB_PAT@github.com/himang10/myfirst-api-server.git .
+        echo "=== Maven 빌드 시작 ==="
+        mvn clean install -DskipTests
+        echo "=== 빌드 완료 ==="
+        ls -al
+
+    volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+
+  # Main Container: Kaniko 빌드 (기본 entrypoint만 사용)
+  containers:
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:latest
+    # command 없음 - 기본 entrypoint(/kaniko/executor) 사용
+    args:
+      - --dockerfile=/workspace/Dockerfile
+      - --context=dir:///workspace
+      - --destination=amdp-registry.skala-ai.com/skala25a/sk199-myfirst-api-server:1.0.0.spring-kaniko-kube
+      - --verbosity=debug
+    volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+      - name: kaniko-secret
+        mountPath: /kaniko/.docker
+        readOnly: true
+
+  restartPolicy: Never
+  volumes:
+    - name: workspace
+      emptyDir: {}
+    - name: kaniko-secret
+      secret:
+        secretName: harbor-registry-secret
+        items:
+          - key: .dockerconfigjson
+            path: config.json

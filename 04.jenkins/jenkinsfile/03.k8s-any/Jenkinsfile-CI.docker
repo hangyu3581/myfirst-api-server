@@ -1,0 +1,175 @@
+// ============================================================
+// NEW-Jenkinsfile-CI.buildah  (agent any 버전 - 개선판)
+// k8s 배포 Jenkins 전용 CI 파이프라인
+// ※ ArgoCD GitOps 방식으로 배포 (Jenkins는 gitops 브랜치만 업데이트)
+//
+// [NEW-Jenkinsfile-CICD.buildah 대비 차이점]
+//   - Update K8s Manifests + Deploy to Kubernetes 대신 → GitOps Update
+//   - gitops 브랜치 push → ArgoCD가 자동 배포 수행
+//
+// [Stage 흐름]
+//   1. Clone              : GitHub에서 소스 코드 클론
+//   2. Build              : Maven으로 JAR 빌드
+//   3. Compute Image Meta : 이미지 태그(버전+해시) 및 레지스트리 경로 계산
+//   4. Image Build & Push : Buildah로 컨테이너 이미지 빌드 후 Harbor에 푸시
+//   5. GitOps Update      : deploy.yaml 이미지 태그 수정 후 gitops 브랜치에 강제 푸시 → ArgoCD 트리거
+//
+// ============================================================
+pipeline {
+  agent any
+
+  environment {
+    // === 사용자 수정 영역 ===
+    GIT_URL                = 'https://github.com/himang10/myfirst-api-server.git'
+    GIT_BRANCH             = 'master'
+    GIT_ID                 = 'skala-github-id'
+    IMAGE_NAME             = 'sk000-myfirst-api-server'
+    // =======================
+    IMAGE_TAG              = '1.0.0'
+    IMAGE_REGISTRY_URL     = 'amdp-registry.skala-ai.com'
+    IMAGE_REGISTRY_PROJECT = 'skala25a'
+    DOCKER_CREDENTIAL_ID   = 'skala-image-registry-id'
+    GITOPS_BRANCH          = 'gitops'
+    GITOPS_MANIFEST        = 'k8s/deploy.yaml'
+  }
+
+  // 동시 실행 방지 + 로그 타임스탬프 출력
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+  }
+
+  stages {
+
+    // ── 1. 소스 클론 ──────────────────────────────────────────
+    stage('Clone') {
+      steps {
+        // ===== DEBUG:START =====
+        sh '''
+          echo "=== [DEBUG] Clone stage environment ==="
+          echo "USER=$(id)"
+          echo "WORKSPACE=${WORKSPACE}"
+          echo "GIT_URL=${GIT_URL}"
+          echo "GIT_BRANCH=${GIT_BRANCH}"
+          git config --global --list | grep safe || echo "no safe.directory set yet"
+        '''
+        // ===== DEBUG:END =====
+        sh 'git config --global --add safe.directory "*"'
+        git branch: "${GIT_BRANCH}",
+            url: "${GIT_URL}",
+            credentialsId: "${GIT_ID}"
+        // ===== DEBUG:START =====
+        sh 'echo "=== [DEBUG] Clone done. Files:"; ls -la; echo "k8s/:"; ls -la k8s/ || echo "k8s/ not found"'
+        // ===== DEBUG:END =====
+      }
+    }
+
+    // ── 2. Maven 빌드 ─────────────────────────────────────────
+    stage('Build') {
+      steps {
+        echo 'Build with Maven'
+        sh 'mvn clean package -DskipTests'
+        sh 'ls -al'
+      }
+    }
+
+    // ── 3. 이미지 태그 계산 ───────────────────────────────────
+    stage('Compute Image Meta') {
+      steps {
+        script {
+          def uuid = java.util.UUID.randomUUID().toString()
+          env.FINAL_IMAGE_TAG = "${IMAGE_TAG}-${env.BUILD_NUMBER}-${uuid.substring(0,8)}"
+          env.IMAGE_REGISTRY  = "${env.IMAGE_REGISTRY_URL}/${env.IMAGE_REGISTRY_PROJECT}"
+          env.REG_HOST        = env.IMAGE_REGISTRY_URL
+          env.IMAGE_REF       = "${env.IMAGE_REGISTRY}/${IMAGE_NAME}:${env.FINAL_IMAGE_TAG}"
+          echo "IMAGE_REF: ${env.IMAGE_REF}"
+        }
+      }
+    }
+
+    // ── 4. 이미지 빌드 & 푸시 (Buildah) ──────────────────────
+    //      Buildah 초기 설정 포함 (별도 stage 불필요)
+    stage('Image Build & Push') {
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: "${DOCKER_CREDENTIAL_ID}",
+          usernameVariable: 'REG_USER',
+          passwordVariable: 'REG_PASS'
+        )]) {
+          sh '''
+            set -eux
+
+            # ===== DEBUG:START =====
+            echo "=== [DEBUG] Image Build stage ==="
+            echo "buildah version: $(buildah version 2>&1 | head -1)"
+            echo "IMAGE_REF=${IMAGE_REF}"
+            echo "IMAGE_REGISTRY_URL=${IMAGE_REGISTRY_URL}"
+            echo "REG_USER=${REG_USER}"
+            ls -la Dockerfile || echo "Dockerfile not found!"
+            # ===== DEBUG:END =====
+
+            buildah login -u "${REG_USER}" -p "${REG_PASS}" "${IMAGE_REGISTRY_URL}"
+            buildah bud  --storage-driver vfs --isolation chroot -t "${IMAGE_REF}" .
+            echo "call buildah push"
+            buildah push --storage-driver vfs "${IMAGE_REF}"
+
+            # ===== DEBUG:START =====
+            echo "=== [DEBUG] buildah images after build ==="
+            buildah images
+            # ===== DEBUG:END =====
+            buildah rmi -a || true
+          '''
+        }
+      }
+    }
+
+    // ── 5. GitOps 업데이트 (ArgoCD CD 트리거) ────────────────
+    //      deploy.yaml 이미지 태그 수정 후 gitops 브랜치에 push
+    stage('GitOps Update') {
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: "${GIT_ID}",
+          usernameVariable: 'GIT_USER',
+          passwordVariable: 'GIT_PASS'
+        )]) {
+          script {
+            env.REPO_PATH = env.GIT_URL.replaceFirst(/^https?:\/\//, '')
+          }
+          sh '''
+            set -eux
+            git config --global user.name  "skala-gitops"
+            git config --global user.email "skala@skala-ai.com"
+            git config --global --add safe.directory '*'
+
+            # 1. gitops 브랜치로 전환 (master 기준으로 신규 생성/초기화)
+            git checkout -B "${GITOPS_BRANCH}"
+
+            # 2. deploy.yaml 이미지 태그 업데이트
+            IMAGE_BASE="${IMAGE_REF%:*}"
+            sed -Ei "s|(image:[[:space:]]*)${IMAGE_BASE}:[^[:space:]]*|\\1${IMAGE_REF}|" "${GITOPS_MANIFEST}"
+
+            # 3. 커밋 & 강제 푸시 (원격 gitops 브랜치를 현재 상태로 덮어씀)
+            git add "${GITOPS_MANIFEST}"
+            git commit -m "[AUTO] image: ${IMAGE_NAME}:${FINAL_IMAGE_TAG}"
+            git remote set-url origin "https://${GIT_USER}:${GIT_PASS}@${REPO_PATH}"
+            git push origin "${GITOPS_BRANCH}" --force
+            echo "[DONE] gitops 브랜치 업데이트 완료: ${IMAGE_REF}"
+          '''
+        }
+      }
+    }
+
+  } // stages
+
+  post {
+    always {
+      deleteDir()  // 워크스페이스 정리 (git clone, target/, 빌드 아티팩트)
+    }
+    success {
+      echo "CI 완료: ${env.IMAGE_REF} 빌드/푸시 및 gitops 브랜치 업데이트 완료"
+    }
+    failure {
+      echo "파이프라인 실패. 로그를 확인하세요."
+    }
+  }
+}

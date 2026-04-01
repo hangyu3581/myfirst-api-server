@@ -1,0 +1,266 @@
+// ============================================================
+// Jenkinsfile-CI.kaniko
+// k8s 배포 Jenkins (02.kubernetes/k8s) 전용 CI 파이프라인
+//
+// [변경 사항 vs jenkinsfile/04.k8s/Jenkinsfile-CI.k8s-kaniko]
+//   - cloud: 'skala' → 'kubernetes'  (03-configmap.yaml 클라우드 이름)
+//   - namespace: 'skala-practice' 명시
+//   - jnlp 이미지: latest → latest-jdk21
+//   - maven 이미지: 3.8.5-openjdk-17 → 3.9-eclipse-temurin-17
+//   - kaniko secret 이름: 'harbor-registry-secret' → 'registry-credentials'
+//     (03-configmap.yaml kaniko-agent 템플릿 참조)
+//
+// [전제 조건]
+//   - Jenkins Kubernetes 플러그인 설치
+//   - Kubernetes Cloud 이름: 'kubernetes' (03-configmap.yaml 참조)
+//   - k8s Secret 'registry-credentials' 생성 필요 (Harbor .dockerconfigjson):
+//       kubectl create secret docker-registry registry-credentials \
+//         --docker-server=amdp-registry.skala-ai.com \
+//         --docker-username=<USER> --docker-password=<PASS> \
+//         -n skala-practice
+//   - Credentials:
+//       skala-github-id: GitHub PAT (username/password)
+//   - 소스 리포지토리에 ./k8s/deploy.yaml 및 Dockerfile 포함
+//   - GitOps CD: 이 파이프라인은 gitops 브랜치를 업데이트 → ArgoCD가 배포 수행
+// ============================================================
+pipeline {
+  agent {
+    kubernetes {
+      cloud 'kubernetes'                    // 03-configmap.yaml에 정의된 클라우드 이름
+      namespace 'skala-practice'            // Jenkins가 배포된 네임스페이스
+      yaml """
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    jenkins: ci-kaniko
+spec:
+  restartPolicy: Never
+  volumes:
+    - name: ws
+      emptyDir: {}                          # 모든 컨테이너가 공유하는 워크스페이스
+    - name: maven-cache
+      emptyDir: {}                          # Maven 로컬 캐시
+    - name: kaniko-secret
+      secret:
+        secretName: registry-credentials   # Harbor 인증 정보 (docker-registry type Secret)
+        items:
+          - key: .dockerconfigjson
+            path: config.json
+  containers:
+    - name: jnlp
+      image: jenkins/inbound-agent:latest-jdk21
+      volumeMounts:
+        - name: ws
+          mountPath: /home/jenkins/agent
+
+    - name: git
+      image: alpine/git:latest
+      command: ["sh","-c"]
+      args: ["cat"]
+      tty: true
+      volumeMounts:
+        - name: ws
+          mountPath: /home/jenkins/agent
+
+    - name: maven
+      image: maven:3.9-eclipse-temurin-17
+      command: ["sh","-c"]
+      args: ["cat"]
+      tty: true
+      volumeMounts:
+        - name: ws
+          mountPath: /home/jenkins/agent
+        - name: maven-cache
+          mountPath: /root/.m2
+
+    - name: kaniko
+      image: gcr.io/kaniko-project/executor:debug
+      command: ["/busybox/sh","-c"]
+      args: ["cat"]
+      tty: true
+      env:
+        - name: DOCKER_CONFIG
+          value: /kaniko/.docker
+      volumeMounts:
+        - name: ws
+          mountPath: /home/jenkins/agent
+        - name: kaniko-secret
+          mountPath: /kaniko/.docker
+          readOnly: true
+"""
+    }
+  }
+
+  environment {
+    // === 사용자 수정 영역 ===
+    GIT_URL                = 'https://github.com/himang10/myfirst-api-server.git'
+    GIT_BRANCH             = 'master'                   // 또는 main
+    GIT_ID                 = 'skala-github-id'          // GitHub PAT Credential ID
+    IMAGE_NAME             = 'sk000-myfirst-api-server' // Harbor 이미지 이름
+    // =======================
+    IMAGE_TAG              = '1.0.0'
+    IMAGE_REGISTRY_URL     = 'amdp-registry.skala-ai.com'
+    IMAGE_REGISTRY_PROJECT = 'skala25a'
+    K8S_NAMESPACE          = 'skala-practice'
+  }
+
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+  }
+
+  stages {
+
+    // ── 1. 소스 클론 ──────────────────────────────────────────
+    stage('Clone Repository') {
+      steps {
+        container('git') {
+          dir("${env.WORKSPACE}") {
+            git branch: "${GIT_BRANCH}",
+                url: "${GIT_URL}",
+                credentialsId: "${GIT_ID}"
+          }
+        }
+      }
+    }
+
+    // ── 2. Maven 빌드 ─────────────────────────────────────────
+    stage('Build with Maven') {
+      steps {
+        container('maven') {
+          dir("${env.WORKSPACE}") {
+            sh 'mvn clean package -DskipTests'
+          }
+        }
+      }
+    }
+
+    // ── 3. 이미지 메타 계산 ───────────────────────────────────
+    stage('Compute Image Meta') {
+      steps {
+        container('maven') {
+          script {
+            def hashcode = sh(script: "date +%s%N | sha256sum | cut -c1-12", returnStdout: true).trim()
+            env.FINAL_IMAGE_TAG = "${IMAGE_TAG}-${hashcode}"
+            env.IMAGE_REGISTRY  = "${env.IMAGE_REGISTRY_URL}/${env.IMAGE_REGISTRY_PROJECT}"
+            env.REG_HOST        = env.IMAGE_REGISTRY_URL
+            env.IMAGE_REF       = "${env.IMAGE_REGISTRY}/${IMAGE_NAME}:${env.FINAL_IMAGE_TAG}"
+
+            echo "REG_HOST: ${env.REG_HOST}"
+            echo "IMAGE_REF: ${env.IMAGE_REF}"
+          }
+        }
+      }
+    }
+
+    // ── 4. 이미지 빌드 & 푸시 (Kaniko) ───────────────────────
+    //      Kaniko: Dockerfile을 데몬 없이 빌드 (Docker socket 불필요)
+    //      인증: /kaniko/.docker/config.json (registry-credentials Secret)
+    stage('Image Build & Push (Kaniko)') {
+      steps {
+        container('kaniko') {
+          dir("${env.WORKSPACE}") {
+            sh '''
+              /kaniko/executor \
+                --dockerfile=Dockerfile \
+                --context="${WORKSPACE}" \
+                --destination="${IMAGE_REF}" \
+                --force
+            '''
+            // 자체 서명 인증서를 사용하는 경우 아래 옵션 추가:
+            // --skip-tls-verify-registry=${REG_HOST}
+          }
+        }
+      }
+    }
+
+    // ── 5. k8s 매니페스트 이미지 태그 업데이트 ───────────────
+    stage('Update K8s Manifests') {
+      steps {
+        container('maven') {
+          dir("${env.WORKSPACE}") {
+            sh '''
+              set -eux
+              test -f ./k8s/deploy.yaml
+
+              echo "--- BEFORE ---"
+              grep -n 'image:' ./k8s/deploy.yaml || true
+
+              sed -Ei "s#(image:[[:space:]]*$IMAGE_REGISTRY/$IMAGE_NAME)[^[:space:]]+#\\1:$FINAL_IMAGE_TAG#" ./k8s/deploy.yaml
+
+              echo "--- AFTER ---"
+              grep -n 'image:' ./k8s/deploy.yaml || true
+            '''
+          }
+        }
+      }
+    }
+
+    // ── 6. gitops 브랜치에 커밋&푸시 (ArgoCD CD 트리거) ──────
+    stage('Git Commit & Push (gitops)') {
+      steps {
+        container('git') {
+          dir("${env.WORKSPACE}") {
+            sh '''
+              set -eux
+              git config --global --add safe.directory '*'
+              git config --global user.name  "skala-gitops"
+              git config --global user.email "skala@skala-ai.com"
+
+              git fetch origin || true
+              cp ./k8s/deploy.yaml ./k8s/deploy.yaml.backup
+
+              # gitops 브랜치 체크아웃
+              if git show-ref --verify --quiet refs/heads/gitops || git show-ref --verify --quiet refs/remotes/origin/gitops; then
+                git checkout -f gitops || git checkout -B gitops origin/gitops
+              else
+                git checkout -b gitops
+              fi
+
+              cp ./k8s/deploy.yaml.backup ./k8s/deploy.yaml
+              sed -Ei "s#(image:[[:space:]]*${IMAGE_REGISTRY}/${IMAGE_NAME})[^[:space:]]+#\\1:${FINAL_IMAGE_TAG}#" ./k8s/deploy.yaml
+              rm -f ./k8s/deploy.yaml.backup
+
+              git add ./k8s/deploy.yaml || true
+              git status
+            '''
+          }
+        }
+
+        withCredentials([usernamePassword(
+          credentialsId: "${env.GIT_ID}",
+          usernameVariable: 'GIT_PUSH_USER',
+          passwordVariable: 'GIT_PUSH_PASSWORD'
+        )]) {
+          container('git') {
+            dir("${env.WORKSPACE}") {
+              script { env.GIT_REPO_PATH = env.GIT_URL.replaceFirst(/^https?:\/\//, '') }
+              sh '''
+                set -eux
+                if ! git diff --cached --quiet; then
+                  git commit -m "[AUTO] Update deploy.yaml with image $FINAL_IMAGE_TAG"
+                  git remote set-url origin https://$GIT_PUSH_USER:$GIT_PUSH_PASSWORD@$GIT_REPO_PATH
+                  git push origin gitops --force
+                  echo "Pushed to gitops branch"
+                else
+                  echo "No changes to commit"
+                fi
+              '''
+            }
+          }
+        }
+      }
+    }
+
+  } // stages
+
+  post {
+    success {
+      echo "CI 완료: ${env.IMAGE_REF} 이미지가 빌드/푸시되었으며 gitops 브랜치가 업데이트되었습니다."
+    }
+    failure {
+      echo "파이프라인 실패. 로그를 확인하세요."
+    }
+  }
+}

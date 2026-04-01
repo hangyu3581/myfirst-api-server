@@ -1,0 +1,173 @@
+jenkins:
+  systemMessage: "SKALA DevOps Study - Jenkins CI/CD (Multi-User)"
+  numExecutors: 2
+  mode: NORMAL
+
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "admin"
+          password: "admin"
+        - id: "skala01"
+          password: "skala"
+        - id: "skala02"
+          password: "skala"
+        - id: "skala03"
+          password: "skala"
+        - id: "skala04"
+          password: "skala"
+
+  authorizationStrategy:
+    roleBased:
+      roles:
+        global:
+          - name: "admin"
+            description: "Jenkins 전체 관리자"
+            permissions:
+              - "Overall/Administer"
+            entries:
+              - user: "admin"
+          - name: "global-read"
+            description: "인증된 사용자 기본 접근"
+            permissions:
+              - "Overall/Read"
+              - "View/Read"
+            entries:
+              - group: "authenticated"
+        items:
+          - name: "folder-owner-skala01"
+            description: "skala01 전용 폴더 관리 권한"
+            pattern: "skala01(/.*)?"
+            permissions:
+              - "Job/Build"
+              - "Job/Cancel"
+              - "Job/Configure"
+              - "Job/Create"
+              - "Job/Delete"
+              - "Job/Discover"
+              - "Job/Read"
+              - "Job/Workspace"
+              - "Run/Delete"
+              - "Run/Replay"
+              - "Run/Update"
+              - "View/Configure"
+              - "View/Create"
+              - "View/Delete"
+              - "View/Read"
+            entries:
+              - user: "skala01"
+          - name: "folder-owner-skala02"
+            description: "skala02 전용 폴더 관리 권한"
+            pattern: "skala02(/.*)?"
+            permissions:
+              - "Job/Build"
+              - "Job/Cancel"
+              - "Job/Configure"
+              - "Job/Create"
+              - "Job/Delete"
+              - "Job/Discover"
+              - "Job/Read"
+              - "Job/Workspace"
+              - "Run/Delete"
+              - "Run/Replay"
+              - "Run/Update"
+              - "View/Configure"
+              - "View/Create"
+              - "View/Delete"
+              - "View/Read"
+            entries:
+              - user: "skala02"
+          - name: "folder-owner-skala03"
+            description: "skala03 전용 폴더 관리 권한"
+            pattern: "skala03(/.*)?"
+            permissions:
+              - "Job/Build"
+              - "Job/Cancel"
+              - "Job/Configure"
+              - "Job/Create"
+              - "Job/Delete"
+              - "Job/Discover"
+              - "Job/Read"
+              - "Job/Workspace"
+              - "Run/Delete"
+              - "Run/Replay"
+              - "Run/Update"
+              - "View/Configure"
+              - "View/Create"
+              - "View/Delete"
+              - "View/Read"
+            entries:
+              - user: "skala03"
+          - name: "folder-owner-skala04"
+            description: "skala04 전용 폴더 관리 권한"
+            pattern: "skala04(/.*)?"
+            permissions:
+              - "Job/Build"
+              - "Job/Cancel"
+              - "Job/Configure"
+              - "Job/Create"
+              - "Job/Delete"
+              - "Job/Discover"
+              - "Job/Read"
+              - "Job/Workspace"
+              - "Run/Delete"
+              - "Run/Replay"
+              - "Run/Update"
+              - "View/Configure"
+              - "View/Create"
+              - "View/Delete"
+              - "View/Read"
+            entries:
+              - user: "skala04"
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          # ── GitHub PAT (username/password) ────────────────────────────
+          # Jenkinsfile: credentialsId: 'skala-github-id'
+          - usernamePassword:
+              scope: GLOBAL
+              id: "skala-github-id"
+              description: "GitHub Personal Access Token"
+              username: "${GIT_USERNAME}"   # ← 실제 GitHub 사용자명으로 교체
+              password: "${GIT_PASSWORD}"   # ← 실제 PAT로 교체
+
+          # ── Harbor Registry (username/password) ───────────────────────
+          # Jenkinsfile: credentialsId: 'skala-image-registry-id'
+          - usernamePassword:
+              scope: GLOBAL
+              id: "skala-image-registry-id"
+              description: "Harbor Registry Credential"
+              username: "${DOCKER_REGISTRY_USER}"
+              password: "${DOCKER_REGISTRY_PASSWORD}"   # ← 실제 비밀번호로 교체
+
+jobs:
+  - script: |
+      ['skala01', 'skala02', 'skala03', 'skala04'].each { userId ->
+        folder(userId) {
+          description(userId + " 전용 CI/CD 작업 공간\n이 폴더 안에 Pipeline Job 을 생성하세요.")
+          displayName(userId + " Workspace")
+        }
+      }
+
+tool:
+  jdk:
+    installations:
+      - name: "JDK17"
+        home: "/opt/java/jdk-17"
+      - name: "JDK21"
+        home: "/opt/java/openjdk"
+  maven:
+    installations:
+      - name: "Maven3"
+        home: "/usr/share/maven"
+  gradle:
+    installations:
+      - name: "Gradle8"
+        home: "/opt/gradle"
+  git:
+    installations:
+      - name: "Default"
+        home: "git"

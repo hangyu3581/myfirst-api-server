@@ -1,0 +1,59 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: deploy-pipeline-secret
+  namespace: skala-tekton
+spec:
+  params:
+    - name: git-url
+      type: string
+      description: "Git repository URL"
+    - name: git-revision
+      type: string
+      default: "main"
+      description: "Git branch to checkout"
+    - name: image-registry
+      type: string
+      description: "Docker image registry"
+    - name: image-name
+      type: string
+      description: "Docker image name"
+    - name: image-tag
+      type: string
+      default: "latest"
+      description: "Docker image tag"
+  workspaces:
+    - name: shared-workspace
+    - name: maven-settings
+    - name: maven-local-repo
+    - name: kubeconfig-dir
+    - name: basic-auth     # Secret이 마운트될 workspace
+    - name: git-auth       # 생성된 git 인증 파일을 저장할 workspace
+    - name: dockerconfig
+    - name: kaniko-docker-config # dockerconfig secret을 mount할 workspace
+  tasks:
+    - name: prepare-docker-auth
+      taskRef:
+        name: prepare-docker-auth
+      workspaces:
+        - name: docker-secret
+          workspace: dockerconfig
+        - name: kaniko-docker-config
+          workspace: kaniko-docker-config
+
+    - name: kaniko-build-push
+      taskRef:
+        name: kaniko
+        kind: Task
+      runAfter:
+        - prepare-docker-auth
+      params:
+        - name: DOCKERFILE
+          value: "Dockerfile"
+        - name: IMAGE
+          value: "$(params.image-registry)/$(params.image-name):$(params.image-tag)"
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+        - name: dockerconfig
+          workspace: kaniko-docker-config

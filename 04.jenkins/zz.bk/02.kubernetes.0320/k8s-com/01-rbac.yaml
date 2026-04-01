@@ -1,0 +1,80 @@
+# ─────────────────────────────────────────────────────────
+# Jenkins ServiceAccount
+# ─────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jenkins
+  namespace: skala-practice
+---
+# ─────────────────────────────────────────────────────────
+# ClusterRole: Jenkins 컨트롤러가 k8s 리소스를 관리하기 위한 권한
+# (동적 Pod 에이전트 생성/삭제 포함)
+# ─────────────────────────────────────────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: jenkins-master
+rules:
+  # Pod 관리 (동적 에이전트 Pod 생성/삭제 - multi-user 빌드 격리 핵심)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get", "list", "watch"]
+  # Events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  # Secret / ConfigMap
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "list", "create", "update", "delete"]
+  # PVC
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "create", "update", "delete"]
+  # 클러스터 정보
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces"]
+    verbs: ["get", "list"]
+  # StorageClass
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list"]
+  # ServiceAccount
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list"]
+  # Deployments / ReplicaSets (kubectl apply 포함)
+  - apiGroups: ["apps"]
+    resources: ["replicasets", "deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Services / Endpoints
+  - apiGroups: [""]
+    resources: ["services", "endpoints"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Ingress
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: jenkins-master
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: jenkins-master
+subjects:
+  - kind: ServiceAccount
+    name: jenkins
+    namespace: skala-practice

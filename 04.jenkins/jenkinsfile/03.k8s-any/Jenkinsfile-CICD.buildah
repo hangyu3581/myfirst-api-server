@@ -1,0 +1,197 @@
+// ============================================================
+// k8s 배포 Jenkins 전용 CI/CD 파이프라인
+//
+// [Stage 흐름]
+//   1. Clone              : GitHub에서 소스 코드 클론
+//   2. Build              : Maven으로 JAR 빌드
+//   3. Compute Image Meta : 이미지 태그(버전+해시) 및 레지스트리 경로 계산
+//   4. Image Build & Push : Buildah로 컨테이너 이미지 빌드 후 Harbor에 푸시
+//   5. Update K8s Manifests: deploy.yaml의 이미지 태그를 새 버전으로 sed 치환
+//   6. Deploy to Kubernetes: kubectl apply로 k8s에 직접 배포 후 롤아웃 완료 대기
+//
+// ============================================================
+pipeline {
+  agent any
+
+  environment {
+    // === 사용자 수정 영역 ===
+    GIT_URL                = 'https://github.com/himang10/myfirst-api-server.git'
+    GIT_BRANCH             = 'master'
+    GIT_ID                 = 'skala-github-id'
+    IMAGE_NAME             = 'sk000-myfirst-api-server'
+    // =======================
+    IMAGE_TAG              = '1.0.0'
+    IMAGE_REGISTRY_URL     = 'amdp-registry.skala-ai.com'
+    IMAGE_REGISTRY_PROJECT = 'skala25a'
+    DOCKER_CREDENTIAL_ID   = 'skala-image-registry-id'
+    K8S_NAMESPACE          = 'skala-practice'
+  }
+
+  // 동시 실행 방지 + 로그 타임스탬프 출력
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+  }
+
+  stages {
+
+    // ── 1. 소스 클론 ──────────────────────────────────────────
+    stage('Clone') {
+      steps {
+        // ===== DEBUG:START =====
+        sh '''
+          echo "=== [DEBUG] Clone stage environment ==="
+          echo "USER=$(id)"
+          echo "WORKSPACE=${WORKSPACE}"
+          echo "GIT_URL=${GIT_URL}"
+          echo "GIT_BRANCH=${GIT_BRANCH}"
+          git config --global --list | grep safe || echo "no safe.directory set yet"
+        '''
+        // ===== DEBUG:END =====
+        sh 'git config --global --add safe.directory "*"'
+        git branch: "${GIT_BRANCH}",
+            url: "${GIT_URL}",
+            credentialsId: "${GIT_ID}"
+        // ===== DEBUG:START =====
+        sh 'echo "=== [DEBUG] Clone done. Files:"; ls -la; echo "k8s/:"; ls -la k8s/ || echo "k8s/ not found"'
+        // ===== DEBUG:END =====
+      }
+    }
+
+    // ── 2. Maven 빌드 ─────────────────────────────────────────
+    stage('Build') {
+      steps {
+        // ===== DEBUG:START =====
+        sh '''
+          echo "=== [DEBUG] Build stage ==="
+          echo "mvn version: $(mvn -version 2>&1 | head -1)"
+          echo "JAVA_HOME=${JAVA_HOME:-not set}"
+        '''
+        // ===== DEBUG:END =====
+        sh 'mvn clean package -DskipTests'
+        // ===== DEBUG:START =====
+        sh 'echo "=== [DEBUG] Build done. target/:"; ls -la target/*.jar 2>/dev/null || echo "no jar found"'
+        // ===== DEBUG:END =====
+      }
+    }
+
+    // ── 3. 이미지 태그 계산 ───────────────────────────────────
+    stage('Compute Image Meta') {
+      steps {
+        script {
+          def uuid = java.util.UUID.randomUUID().toString()
+          env.FINAL_IMAGE_TAG = "${IMAGE_TAG}-${env.BUILD_NUMBER}-${uuid.substring(0,8)}"
+          env.IMAGE_REGISTRY  = "${env.IMAGE_REGISTRY_URL}/${env.IMAGE_REGISTRY_PROJECT}"
+          env.REG_HOST        = env.IMAGE_REGISTRY_URL
+          env.IMAGE_REF       = "${env.IMAGE_REGISTRY}/${IMAGE_NAME}:${env.FINAL_IMAGE_TAG}"
+          echo "IMAGE_REF: ${env.IMAGE_REF}"
+        }
+      }
+    }
+
+    // ── 4. 이미지 빌드 & 푸시 (Buildah) ──────────────────────
+    //      Buildah 초기 설정 포함 (별도 stage 불필요 - Dockerfile ENV로 처리됨)
+    stage('Image Build & Push') {
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: "${DOCKER_CREDENTIAL_ID}",
+          usernameVariable: 'REG_USER',
+          passwordVariable: 'REG_PASS'
+        )]) {
+          sh '''
+            set -eux
+
+            # ===== DEBUG:START =====
+            echo "=== [DEBUG] Image Build stage ==="
+            echo "buildah version: $(buildah version 2>&1 | head -1)"
+            echo "IMAGE_REF=${IMAGE_REF}"
+            echo "IMAGE_REGISTRY_URL=${IMAGE_REGISTRY_URL}"
+            echo "REG_USER=${REG_USER}"
+            ls -la Dockerfile || echo "Dockerfile not found!"
+            # ===== DEBUG:END =====
+
+            # 빌드 & 푸시
+            # --isolation chroot : user namespace 미사용 (k8s 환경에서 권한 문제 우회)
+            buildah login -u "${REG_USER}" -p "${REG_PASS}" "${IMAGE_REGISTRY_URL}"
+            buildah bud  --storage-driver vfs --isolation chroot -t "${IMAGE_REF}" .
+            echo "call buildah push"
+            buildah push --storage-driver vfs "${IMAGE_REF}"
+
+            # ===== DEBUG:START =====
+            echo "=== [DEBUG] buildah images after build ==="
+            buildah images
+            # ===== DEBUG:END =====
+          '''
+        }
+      }
+    }
+
+    // ── 5. k8s 매니페스트 이미지 태그 업데이트 ───────────────
+    stage('Update K8s Manifests') {
+      steps {
+        sh '''
+          set -eux
+          test -f ./k8s/deploy.yaml
+
+          # ===== DEBUG:START =====
+          echo "=== [DEBUG] Update K8s Manifests stage ==="
+          echo "IMAGE_REGISTRY=${IMAGE_REGISTRY}"
+          echo "IMAGE_NAME=${IMAGE_NAME}"
+          echo "FINAL_IMAGE_TAG=${FINAL_IMAGE_TAG}"
+          echo "--- BEFORE ---"
+          grep -n 'image:' ./k8s/deploy.yaml || true
+          # ===== DEBUG:END =====
+
+          IMAGE_BASE="${IMAGE_REF%:*}"
+          sed -Ei "s|(image:[[:space:]]*)${IMAGE_BASE}:[^[:space:]]*|\\1${IMAGE_REF}|" ./k8s/deploy.yaml
+          
+          # ===== DEBUG:START =====
+          echo "--- AFTER ---"
+          grep -n 'image:' ./k8s/deploy.yaml || true
+          # ===== DEBUG:END =====
+        '''
+      }
+    }
+
+    // ── 6. Kubernetes 직접 배포 (kubectl apply) ───────────────
+    //      [주의] ClusterRole(jenkins-master)에 deployments 쓰기 권한 필요
+    stage('Deploy to Kubernetes') {
+      steps {
+        sh '''
+          set -eux
+
+          # ===== DEBUG:START =====
+          echo "=== [DEBUG] Deploy to Kubernetes stage ==="
+          echo "K8S_NAMESPACE=${K8S_NAMESPACE}"
+          echo "IMAGE_NAME=${IMAGE_NAME}"
+          kubectl version --client 2>&1 | head -1 || echo "kubectl not found!"
+          # ===== DEBUG:END =====
+
+          echo "=== k8s yaml 적용 ==="
+          kubectl apply -n "${K8S_NAMESPACE}" -f ./k8s/
+
+          echo "=== 배포 롤아웃 대기 ==="
+          kubectl rollout status deployment/"${IMAGE_NAME}" \
+            -n "${K8S_NAMESPACE}" \
+            --timeout=180s
+
+          echo "=== 배포 완료: ${IMAGE_REF} ==="
+          kubectl get pods -n "${K8S_NAMESPACE}" -l "app=${IMAGE_NAME}"
+        '''
+      }
+    }
+
+  } // stages
+
+  post {
+    always {
+      deleteDir()  // 워크스페이스 정리 (git clone, target/, 빌드 아티팩트)
+    }
+    success {
+      echo "CI/CD 완료: ${env.IMAGE_REF} 이 ${K8S_NAMESPACE} 네임스페이스에 배포되었습니다."
+    }
+    failure {
+      echo "파이프라인 실패. 로그를 확인하세요."
+    }
+  }
+}

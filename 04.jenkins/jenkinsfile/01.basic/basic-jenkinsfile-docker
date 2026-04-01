@@ -1,0 +1,53 @@
+pipeline {
+    agent {
+        docker {
+            image 'amdp-registry.skala-ai.com/library/alpine:3.20'        // 여기에 원하는 이미지 지정 (node, maven 등)
+            args  '--entrypoint=""'    // 필요 시 옵션; entrypoint 초기화 예시
+        }
+    }
+
+    environment { APP_NAME = 'my-sample-app'; DEPLOY_ENV = 'dev' }
+
+    options {
+        timeout(time: 10, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '5'))
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        stage('build') {
+            environment { CURRENT_ENV = 'build' }
+            steps {
+                echo "Building ${env.APP_NAME}"
+                echo "Current env: ${env.CURRENT_ENV}"
+            }
+            post {
+                always { echo 'Build stage finished (regardless of result)' }
+            }
+        }
+
+        stage('test') {
+            steps {
+                echo "Testing in ${env.DEPLOY_ENV}"
+            }
+            post {
+                always { echo 'test finished' }
+            }
+        }
+
+        stage('deploy') {
+            steps {
+                echo "Deploying ${env.APP_NAME} to ${env.DEPLOY_ENV}"
+            }
+            post {
+                always { echo 'deploy finished' }
+            }
+        }
+    }
+
+    post {
+        always  { echo 'Pipeline finished' }
+        success { echo 'Success!' }
+        failure { echo 'Failed!' }
+    }
+}

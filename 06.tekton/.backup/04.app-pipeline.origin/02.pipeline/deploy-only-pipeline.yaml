@@ -1,0 +1,43 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: springboot-push-pipeline
+  namespace: skala-tekton
+spec:
+  params:
+    - name: git-url
+      type: string
+      description: "Git repository URL"
+    - name: git-revision
+      type: string
+      default: "main"
+      description: "Git branch to checkout"
+    - name: image-registry
+      type: string
+      description: "Docker image registry"
+    - name: image-name
+      type: string
+      description: "Docker image name"
+    - name: image-tag
+      type: string
+      default: "latest"
+      description: "Docker image tag"
+  workspaces:
+    - name: shared-workspace
+    - name: maven-settings
+    - name: maven-local-repo
+  tasks:
+    - name: k8s-deploy
+      taskRef:
+        name: kubernetes-actions
+      params:
+        - name: SCRIPT
+          value: |
+            kubectl apply -f $(workspaces.source.path)/k8s
+            ---------
+            kubectl get deployment
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+

@@ -1,0 +1,65 @@
+# 기본 보안 및 인증
+antisamy-markup-formatter
+matrix-auth
+pam-auth
+
+# 기본 빌드 기능
+build-timeout
+timestamper
+credentials-binding
+ws-cleanup
+
+# Pipeline 핵심 플러그인
+workflow-aggregator
+workflow-multibranch
+workflow-job
+pipeline-stage-view
+pipeline-build-step
+
+# Git 및 SCM
+git
+scm-api
+
+# GitHub 통합
+github
+github-branch-source
+github-api
+
+# Docker 지원
+docker-workflow
+
+# Kubernetes 지원 (JCasC clouds 설정을 위해 필수)
+kubernetes
+kubernetes-credentials
+kubernetes-cli
+
+# JCasC (Jenkins Configuration as Code) - 필수!
+configuration-as-code
+
+# 빌드 도구
+maven-plugin
+gradle
+
+# 테스트 및 품질
+junit
+warnings-ng
+htmlpublisher
+
+# 알림
+email-ext
+mailer
+
+# 사용자 관리
+role-strategy
+
+# 유틸리티
+build-user-vars-plugin
+ansicolor
+build-name-setter
+copyartifact
+jobConfigHistory
+parameterized-trigger
+rebuild
+
+job-dsl
+blueocean

@@ -1,0 +1,10 @@
+test:
+  enabled: true
+replicaCount: 1
+autoscaling:
+     enabled: false
+
+name: my-app
+config:
+  key1: value1
+  key2: value2

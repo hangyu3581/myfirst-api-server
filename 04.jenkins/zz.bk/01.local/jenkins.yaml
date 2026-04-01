@@ -1,0 +1,46 @@
+jenkins:
+  systemMessage: "SKALA DevOps Study - Jenkins based CI/CD"
+  numExecutors: 2
+  mode: NORMAL
+
+  securityRealm:
+    local:
+      allowsSignup: true
+      users:
+        - id: "admin"
+          password: "admin"
+        - id: "skala"
+          password: "skala"
+        - id: "skala2"
+          password: "skala"
+
+  authorizationStrategy:
+    projectMatrix:
+      permissions:
+        # admin은 모든 권한
+        - "Overall/Administer:admin"
+        - "Overall/Read:admin"
+        - "View/Read:admin"
+        - "Job/Discover:admin"
+        - "Job/Read:admin"
+        - "Job/Build:admin"
+        - "Job/Configure:admin"
+        - "Job/Create:admin"
+        - "Job/Delete:admin"
+        - "Job/Cancel:admin"
+        - "Credentials/Create:admin"
+        - "Credentials/Update:admin"
+        - "Credentials/View:admin"
+        - "Credentials/Delete:admin"
+        - "Credentials/ManageDomains:admin"
+        
+        # 일반 사용자들의 기본 권한 (매우 제한적)
+        - "Overall/Read:authenticated"
+        - "View/Read:authenticated"
+          # 각 사용자별 개별 권한 (자신의 작업만 관리 가능)
+        - "Job/Create:skala"
+        - "Job/Create:skala2"
+        # 각 사용자별 credential 생성 권한
+        - "Credentials/Create:skala"
+        - "Credentials/Create:skala2"
+

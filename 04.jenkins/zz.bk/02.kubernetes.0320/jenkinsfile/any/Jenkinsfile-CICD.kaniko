@@ -1,0 +1,159 @@
+// ============================================================
+// Jenkinsfile-CICD.kaniko  (agent any 버전)
+// k8s 배포 Jenkins 전용 CI/CD 파이프라인
+// ※ GitOps(ArgoCD) 없이 Jenkins가 직접 kubectl로 배포
+//
+// [agent 버전과의 차이]
+//   - agent { kubernetes { ... } }  →  agent any
+//   - container('xxx') { } 블록 제거 → Jenkins agent에 도구 직접 설치 필요
+//   - kaniko는 컨테이너 전용 도구 → agent any에서 docker build/push로 대체
+//   - 필요 도구: git, maven, docker, kubectl (Jenkins agent에 설치)
+//
+// [RBAC 요구 사항 - 직접 배포 시 01-rbac.yaml 업데이트 필요]
+//   현재 ClusterRole(jenkins-master)에 아래 권한 추가 필요:
+//   - apiGroups: ["apps"]
+//     resources: ["deployments"]
+//     verbs: ["create","update","patch","delete"]
+//   - apiGroups: [""]
+//     resources: ["services","configmaps"]
+//     verbs: ["create","update","patch","delete"]
+//
+// [전제 조건]
+//   - Jenkins agent에 git, mvn, docker CLI + daemon, kubectl 설치
+//   - kubectl 인증: KUBECONFIG 환경변수 또는 ~/.kube/config 설정
+//   - Credentials:
+//       skala-github-id        : GitHub PAT (username/password)
+//       skala-image-registry-id: Harbor registry (username/password)
+//   - 소스 리포지토리에 ./k8s/ 디렉토리 (deploy.yaml 등) 및 Dockerfile 포함
+// ============================================================
+pipeline {
+  agent any
+
+  environment {
+    // === 사용자 수정 영역 ===
+    GIT_URL                = 'https://github.com/himang10/myfirst-api-server.git'
+    GIT_BRANCH             = 'master'                   // 또는 main
+    GIT_ID                 = 'skala-github-id'          // GitHub PAT Credential ID
+    IMAGE_NAME             = 'sk000-myfirst-api-server' // Harbor 이미지 이름
+    // =======================
+    IMAGE_TAG              = '1.0.0'
+    IMAGE_REGISTRY_URL     = 'amdp-registry.skala-ai.com'
+    IMAGE_REGISTRY_PROJECT = 'skala25a'
+    DOCKER_CREDENTIAL_ID   = 'skala-image-registry-id'  // Harbor Credential ID
+    K8S_NAMESPACE          = 'skala-practice'
+  }
+
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+  }
+
+  stages {
+
+    // ── 1. 소스 클론 ──────────────────────────────────────────
+    stage('Clone Repository') {
+      steps {
+        sh 'git config --global --add safe.directory "*"'
+        git branch: "${GIT_BRANCH}",
+            url: "${GIT_URL}",
+            credentialsId: "${GIT_ID}"
+      }
+    }
+
+    // ── 2. Maven 빌드 ─────────────────────────────────────────
+    stage('Build with Maven') {
+      steps {
+        sh 'mvn clean package -DskipTests'
+      }
+    }
+
+    // ── 3. 이미지 메타 계산 ───────────────────────────────────
+    stage('Compute Image Meta') {
+      steps {
+        script {
+          def hashcode = sh(script: "date +%s%N | sha256sum | cut -c1-12", returnStdout: true).trim()
+          env.FINAL_IMAGE_TAG = "${IMAGE_TAG}-${hashcode}"
+          env.IMAGE_REGISTRY  = "${env.IMAGE_REGISTRY_URL}/${env.IMAGE_REGISTRY_PROJECT}"
+          env.REG_HOST        = env.IMAGE_REGISTRY_URL
+          env.IMAGE_REF       = "${env.IMAGE_REGISTRY}/${IMAGE_NAME}:${env.FINAL_IMAGE_TAG}"
+
+          echo "REG_HOST: ${env.REG_HOST}"
+          echo "IMAGE_REF: ${env.IMAGE_REF}"
+        }
+      }
+    }
+
+    // ── 4. 이미지 빌드 & 푸시 (Docker) ───────────────────────
+    //      kaniko는 agent any에서 실행 불가 → docker build/push 사용
+    //      Harbor(self-signed) 사용 시 /etc/docker/daemon.json에 insecure-registries 설정 필요
+    stage('Image Build & Push (Docker)') {
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: "${DOCKER_CREDENTIAL_ID}",
+          usernameVariable: 'REG_USER',
+          passwordVariable: 'REG_PASS'
+        )]) {
+          sh '''
+            set -eux
+            echo "Login to ${REG_HOST}"
+            echo "${REG_PASS}" | docker login "${REG_HOST}" -u "${REG_USER}" --password-stdin
+
+            docker build --platform linux/amd64 -t "${IMAGE_REF}" .
+            docker push "${IMAGE_REF}"
+            docker rmi "${IMAGE_REF}" || true
+          '''
+        }
+      }
+    }
+
+    // ── 5. k8s 매니페스트 이미지 태그 업데이트 ───────────────
+    stage('Update K8s Manifests') {
+      steps {
+        sh '''
+          set -eux
+          test -f ./k8s/deploy.yaml
+
+          echo "--- BEFORE ---"
+          grep -n 'image:' ./k8s/deploy.yaml || true
+
+          sed -Ei "s#(image:[[:space:]]*$IMAGE_REGISTRY/$IMAGE_NAME)[^[:space:]]+#\\1:$FINAL_IMAGE_TAG#" ./k8s/deploy.yaml
+
+          echo "--- AFTER ---"
+          grep -n 'image:' ./k8s/deploy.yaml || true
+        '''
+      }
+    }
+
+    // ── 6. Kubernetes 직접 배포 (kubectl apply) ───────────────
+    //      kubectl은 Jenkins agent에 설치되어 있어야 함
+    //      인증: KUBECONFIG 환경변수 또는 ~/.kube/config
+    //      [주의] ClusterRole(jenkins-master)에 deployments 쓰기 권한 필요
+    stage('Deploy to Kubernetes') {
+      steps {
+        sh '''
+          set -eux
+          echo "=== k8s yaml 적용 ==="
+          kubectl apply -n ${K8S_NAMESPACE} -f ./k8s/
+
+          echo "=== 배포 롤아웃 대기 ==="
+          kubectl rollout status deployment/${IMAGE_NAME} \
+            -n ${K8S_NAMESPACE} \
+            --timeout=180s
+
+          echo "=== 배포 완료: ${IMAGE_REF} ==="
+          kubectl get pods -n ${K8S_NAMESPACE} -l app=${IMAGE_NAME}
+        '''
+      }
+    }
+
+  } // stages
+
+  post {
+    success {
+      echo "CI/CD 완료: ${env.IMAGE_REF} 이 ${K8S_NAMESPACE} 네임스페이스에 배포되었습니다."
+    }
+    failure {
+      echo "파이프라인 실패. 로그를 확인하세요."
+    }
+  }
+}

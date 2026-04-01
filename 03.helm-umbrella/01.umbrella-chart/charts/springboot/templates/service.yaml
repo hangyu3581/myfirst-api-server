@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "springboot.appName" . }}
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector:
+    app: {{ include "springboot.appName" . }}
+  ports:
+    - name: http
+      protocol: TCP
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.port }}
+    - name: mgmt
+      protocol: TCP
+      port: {{ .Values.service.mgmtPort }}
+      targetPort: {{ .Values.service.mgmtPort }}
+  type: {{ .Values.service.type }}

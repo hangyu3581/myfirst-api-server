@@ -1,0 +1,44 @@
+========================================================
+  myfirst-helm 배포 완료
+  Chart Version : {{ .Chart.Version }}
+  App Version   : {{ .Chart.AppVersion }}
+  Namespace     : {{ .Values.global.namespace }}
+  User          : sk{{ .Values.global.userName }}
+========================================================
+
+[배포된 리소스]
+
+  1. Spring Boot API Server
+     - Deployment : sk{{ .Values.global.userName }}-myfirst-api-server
+     - Service    : sk{{ .Values.global.userName }}-myfirst-api-server (ClusterIP {{ .Values.springboot.service.port }})
+     {{- if .Values.springboot.ingress.enabled }}
+     - Ingress    : https://sk{{ .Values.global.userName }}-ingress.{{ .Values.springboot.ingress.baseDomain }}/
+     {{- end }}
+
+  2. Vue.js Frontend
+     - Deployment : sk{{ .Values.global.userName }}-myfirst-frontend
+     - Service    : sk{{ .Values.global.userName }}-myfirst-frontend (ClusterIP {{ .Values.vuejs.service.port }})
+
+  3. Python App
+     - Deployment : sk{{ .Values.global.userName }}-my-app-python
+     - Service    : sk{{ .Values.global.userName }}-my-app-python (ClusterIP {{ .Values.python.service.port }})
+
+  4. MariaDB
+  {{- if .Values.mariadb.enabled }}
+     - StatefulSet : {{ .Release.Name }}-mariadb
+     - Service     : {{ .Release.Name }}-mariadb (ClusterIP 3306)
+     - Database    : {{ .Values.mariadb.auth.database }}
+     - Username    : {{ .Values.mariadb.auth.username }}
+  {{- else }}
+     - (비활성화됨 - mariadb.enabled=false)
+  {{- end }}
+
+[이미지 레지스트리]
+  {{ .Values.global.appImageRegistry }}/sk{{ .Values.global.userName }}-*:{{ .Values.springboot.image.tag }}
+
+[userName 변경 방법]
+  helm upgrade --install {{ .Release.Name }} ./myfirst-helm \
+    --namespace {{ .Release.Namespace }} \
+    --set global.userName=<번호>
+
+========================================================

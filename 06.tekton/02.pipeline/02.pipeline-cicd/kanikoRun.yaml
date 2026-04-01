@@ -1,0 +1,30 @@
+# 더 간단한 버전 - 최소 옵션만 사용
+apiVersion: tekton.dev/v1beta1
+kind: TaskRun
+metadata:
+  name: kaniko-minimal-debug
+  namespace: skala-tekton
+  labels:
+    app: myfirst-api-server
+    debug: "minimal"
+spec:
+  taskRef:
+    name: kaniko
+    kind: Task
+  params:
+    - name: DOCKERFILE
+      value: "Dockerfile"
+    - name: IMAGE
+      value: "amdp-registry.skala-ai.com/skala25a/sk000-myfirst-api-server:minimal-1.0.0"
+    - name: EXTRA_ARGS
+      value:
+        - "--skip-tls-verify"
+        - "--verbosity=info"
+  workspaces:
+    - name: source
+      persistentVolumeClaim:
+        claimName: sk000-shared-workspace-pvc
+    - name: dockerconfig
+      secret:
+        secretName: harbor-registry-secret
+  serviceAccountName: sk000-pipeline-sa

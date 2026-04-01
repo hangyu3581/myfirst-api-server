@@ -1,0 +1,187 @@
+// ============================================================
+// Jenkinsfile-CI.buildah  (agent any 버전)
+// k8s 배포 Jenkins 전용 CI 파이프라인
+//
+// [agent 버전과의 차이]
+//   - agent { kubernetes { ... } }  →  agent any
+//   - container('xxx') { } 블록 제거 → Jenkins agent에 도구 직접 설치 필요
+//   - 필요 도구: git, maven, buildah (Jenkins agent 또는 컨트롤러에 설치)
+//
+// [전제 조건]
+//   - Jenkins agent에 git, mvn, buildah 설치
+//   - buildah 실행 권한 (루트 또는 /proc/sys/user/max_user_namespaces 설정)
+//   - Credentials:
+//       skala-github-id        : GitHub PAT (username/password)
+//       skala-image-registry-id: Harbor registry (username/password)
+//   - 소스 리포지토리에 ./k8s/deploy.yaml 및 Dockerfile 포함
+//   - GitOps CD: 이 파이프라인은 gitops 브랜치를 업데이트 → ArgoCD가 배포 수행
+// ============================================================
+pipeline {
+  agent any
+
+  environment {
+    // === 사용자 수정 영역 ===
+    GIT_URL                = 'https://github.com/himang10/myfirst-api-server.git'
+    GIT_BRANCH             = 'master'                   // 또는 main
+    GIT_ID                 = 'skala-github-id'          // GitHub PAT Credential ID
+    IMAGE_NAME             = 'sk000-myfirst-api-server' // Harbor 이미지 이름
+    // =======================
+    IMAGE_TAG              = '1.0.0'
+    IMAGE_REGISTRY_URL     = 'amdp-registry.skala-ai.com'
+    IMAGE_REGISTRY_PROJECT = 'skala25a'
+    DOCKER_CREDENTIAL_ID   = 'skala-image-registry-id'  // Harbor Credential ID
+    K8S_NAMESPACE          = 'skala-practice'
+  }
+
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+  }
+
+  stages {
+
+    // ── 1. 소스 클론 ──────────────────────────────────────────
+    stage('Clone Repository') {
+      steps {
+        sh 'git config --global --add safe.directory "*"'
+        git branch: "${GIT_BRANCH}",
+            url: "${GIT_URL}",
+            credentialsId: "${GIT_ID}"
+      }
+    }
+
+    // ── 2. Maven 빌드 ─────────────────────────────────────────
+    stage('Build with Maven') {
+      steps {
+        echo 'Build with Maven'
+        sh 'mvn clean package -DskipTests'
+      }
+    }
+
+    // ── 3. 이미지 메타 계산 ───────────────────────────────────
+    stage('Compute Image Meta') {
+      steps {
+        script {
+          def hashcode = sh(script: "date +%s%N | sha256sum | cut -c1-12", returnStdout: true).trim()
+          env.FINAL_IMAGE_TAG = "${IMAGE_TAG}-${hashcode}"
+          env.IMAGE_REGISTRY  = "${env.IMAGE_REGISTRY_URL}/${env.IMAGE_REGISTRY_PROJECT}"
+          env.REG_HOST        = env.IMAGE_REGISTRY_URL
+          env.IMAGE_REF       = "${env.IMAGE_REGISTRY}/${IMAGE_NAME}:${env.FINAL_IMAGE_TAG}"
+
+          echo "REG_HOST: ${env.REG_HOST}"
+          echo "IMAGE_REF: ${env.IMAGE_REF}"
+        }
+      }
+    }
+
+    // ── 4. Buildah 설정 ───────────────────────────────────────
+    stage('Prepare Buildah Config') {
+      steps {
+        sh '''
+          set -eux
+          mkdir -p /etc/containers
+          cat > /etc/containers/registries.conf <<'CONF'
+unqualified-search-registries = ["docker.io","quay.io","registry.fedoraproject.org"]
+CONF
+          cat /etc/containers/registries.conf
+        '''
+      }
+    }
+
+    // ── 5. 이미지 빌드 & 푸시 (Buildah) ──────────────────────
+    stage('Image Build & Push (Buildah)') {
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: "${DOCKER_CREDENTIAL_ID}",
+          usernameVariable: 'REG_USER',
+          passwordVariable: 'REG_PASS'
+        )]) {
+          sh '''
+            set -eux
+            echo "Login to ${REG_HOST} as ${REG_USER}"
+            buildah login -u "${REG_USER}" -p "${REG_PASS}" "${REG_HOST}"
+
+            buildah bud  --storage-driver vfs --isolation chroot -t "${IMAGE_REF}" .
+            buildah push --storage-driver vfs "${IMAGE_REF}"
+          '''
+        }
+      }
+    }
+
+    // ── 6. k8s 매니페스트 이미지 태그 업데이트 ───────────────
+    stage('Update K8s Manifests') {
+      steps {
+        sh '''
+          set -eux
+          test -f ./k8s/deploy.yaml
+
+          echo "--- BEFORE ---"
+          grep -n 'image:' ./k8s/deploy.yaml || true
+
+          sed -Ei "s#(image:[[:space:]]*$IMAGE_REGISTRY/$IMAGE_NAME)[^[:space:]]+#\\1:$FINAL_IMAGE_TAG#" ./k8s/deploy.yaml
+
+          echo "--- AFTER ---"
+          grep -n 'image:' ./k8s/deploy.yaml || true
+        '''
+      }
+    }
+
+    // ── 7. gitops 브랜치에 커밋&푸시 (ArgoCD CD 트리거) ──────
+    stage('Git Commit & Push (gitops)') {
+      steps {
+        sh '''
+          set -eux
+          git config --global --add safe.directory '*'
+          git config --global user.name  "skala-gitops"
+          git config --global user.email "skala@skala-ai.com"
+
+          git fetch origin || true
+          cp ./k8s/deploy.yaml ./k8s/deploy.yaml.backup
+
+          # gitops 브랜치 체크아웃
+          if git show-ref --verify --quiet refs/heads/gitops || git show-ref --verify --quiet refs/remotes/origin/gitops; then
+            git checkout -f gitops || git checkout -B gitops origin/gitops
+          else
+            git checkout -b gitops
+          fi
+
+          cp ./k8s/deploy.yaml.backup ./k8s/deploy.yaml
+          sed -Ei "s#(image:[[:space:]]*${IMAGE_REGISTRY}/${IMAGE_NAME})[^[:space:]]+#\\1:${FINAL_IMAGE_TAG}#" ./k8s/deploy.yaml
+          rm -f ./k8s/deploy.yaml.backup
+
+          git add ./k8s/deploy.yaml || true
+          git status
+        '''
+
+        withCredentials([usernamePassword(
+          credentialsId: "${env.GIT_ID}",
+          usernameVariable: 'GIT_PUSH_USER',
+          passwordVariable: 'GIT_PUSH_PASSWORD'
+        )]) {
+          script { env.GIT_REPO_PATH = env.GIT_URL.replaceFirst(/^https?:\/\//, '') }
+          sh '''
+            set -eux
+            if ! git diff --cached --quiet; then
+              git commit -m "[AUTO] Update deploy.yaml with image $FINAL_IMAGE_TAG"
+              git remote set-url origin https://$GIT_PUSH_USER:$GIT_PUSH_PASSWORD@$GIT_REPO_PATH
+              git push origin gitops --force
+              echo "Pushed to gitops branch"
+            else
+              echo "No changes to commit"
+            fi
+          '''
+        }
+      }
+    }
+
+  } // stages
+
+  post {
+    success {
+      echo "CI 완료: ${env.IMAGE_REF} 이미지가 빌드/푸시되었으며 gitops 브랜치가 업데이트되었습니다."
+    }
+    failure {
+      echo "파이프라인 실패. 로그를 확인하세요."
+    }
+  }
+}

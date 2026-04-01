@@ -1,0 +1,23 @@
+apiVersion: triggers.tekton.dev/v1beta1
+kind: EventListener
+metadata:
+  name: sk199-springboot-listener
+  namespace: skala-tekton
+spec:
+  serviceAccountName: sk199-pipeline-sa
+  triggers:
+    - name: sk199-springboot-trigger
+      interceptors:
+        - name: "github-filter"
+          ref:
+            name: "cel"
+          params:
+          - name: "filter"
+            value: "body.ref == 'refs/heads/master' || body.ref == 'refs/heads/main'"
+          - name: "filter"
+            value: "body.ref != 'refs/heads/gitops'"
+      bindings:
+        - ref: sk199-springboot-binding
+      template:
+        ref: sk199-springboot-trigger-template
+

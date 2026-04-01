@@ -1,0 +1,169 @@
+// ============================================================
+// NEW-NEW-Jenkinsfile-CI.kaniko  (stage별 별도 agent pod 버전)
+// k8s 배포 Jenkins 전용 CI 파이프라인
+//
+// [NEW-Jenkinsfile-CI.kaniko 와의 차이]
+//   단일 Pod 방식:
+//     pipeline { agent { label 'maven-kaniko' } }
+//     → 1개 Pod(jnlp+maven+kaniko)가 생성되어 모든 stage 처리
+//     → workspace 공유 → 파일 전달 불필요
+//     → Pod 생성 1회, 리소스 선점 후 파이프라인 종료까지 유지
+//
+//   stage별 별도 Pod 방식 (이 파일):
+//     pipeline { agent none }  + 각 stage에 agent { label '...' }
+//     → stage마다 새 Pod 생성/삭제
+//     → workspace가 다르므로 stash/unstash로 파일 전달 필요
+//     → 장점: 리소스를 필요한 stage에서만 점유 (대형 클러스터 유리)
+//     → 단점: Pod 생성/삭제 오버헤드 발생, stash 코드 추가 필요
+//
+// [컨테이너 구성 - 03-configmap.yaml template 사용]
+//   Clone stage       : label 'k8s-agent'   (jnlp - git 내장)
+//   Build stage       : label 'maven'        (jnlp + maven)
+//   Image Build stage : label 'kaniko'       (jnlp + kaniko)
+//   GitOps stage      : label 'k8s-agent'   (jnlp - git 내장)
+//
+// [전제 조건]
+//   - Jenkins Kubernetes 플러그인 설치
+//   - Kubernetes Cloud 이름: 'skala' (03-configmap.yaml 참조)
+//   - k8s Secret 'harbor-registry-secret' 생성 (docker-registry type)
+//   - Credentials: skala-github-id (GitHub PAT)
+//   - 소스 리포지토리에 k8s/deploy.yaml 및 Dockerfile 포함
+// ============================================================
+pipeline {
+  agent none                                // stage별로 각각 agent 지정
+
+  environment {
+    // === 사용자 수정 영역 ===
+    GIT_URL                = 'https://github.com/himang10/myfirst-api-server.git'
+    GIT_BRANCH             = 'master'
+    GIT_ID                 = 'skala-github-id'
+    IMAGE_NAME             = 'sk000-myfirst-api-server'
+    // =======================
+    IMAGE_TAG              = '1.0.0'
+    IMAGE_REGISTRY_URL     = 'amdp-registry.skala-ai.com'
+    IMAGE_REGISTRY_PROJECT = 'skala25a'
+    GITOPS_BRANCH          = 'gitops'
+    GITOPS_MANIFEST        = 'k8s/deploy.yaml'
+  }
+
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+  }
+
+  stages {
+
+    // ── 1. 소스 클론 ──────────────────────────────────────────
+    // Pod: k8s-agent (jnlp - git 내장)
+    // stash: 소스 전체를 'source'로 저장 → Build stage에서 사용
+    stage('Clone') {
+      agent { label 'k8s-agent' }
+      steps {
+        sh 'git config --global --add safe.directory "*"'
+        git branch: "${GIT_BRANCH}",
+            url: "${GIT_URL}",
+            credentialsId: "${GIT_ID}"
+        stash name: 'source', includes: '**/*', useDefaultExcludes: false
+      }
+    }
+
+    // ── 2. Maven 빌드 ─────────────────────────────────────────
+    // Pod: maven-agent (jnlp + maven)
+    // unstash: 소스 복원 → 빌드 → target/ 포함해서 'built'로 stash
+    stage('Build') {
+      agent { label 'maven' }
+      steps {
+        unstash 'source'
+        container('maven') {
+          sh 'mvn clean package -DskipTests'
+        }
+        stash name: 'built', includes: '**/*', useDefaultExcludes: false
+        script {
+          def hash = sh(script: "date +%s%N | sha256sum | cut -c1-12", returnStdout: true).trim()
+          env.FINAL_IMAGE_TAG = "${IMAGE_TAG}-${hash}"
+          env.IMAGE_REGISTRY  = "${IMAGE_REGISTRY_URL}/${IMAGE_REGISTRY_PROJECT}"
+          env.IMAGE_REF       = "${IMAGE_REGISTRY}/${IMAGE_NAME}:${FINAL_IMAGE_TAG}"
+          echo "IMAGE_REF: ${env.IMAGE_REF}"
+        }
+      }
+    }
+
+    // ── 3. 이미지 빌드 & 푸시 (Kaniko) ───────────────────────
+    // Pod: kaniko-agent (jnlp + kaniko + harbor-registry-secret mount)
+    // unstash: 빌드 결과물(소스+target) 복원 → Dockerfile 컨텍스트로 사용
+    stage('Image Build & Push') {
+      agent { label 'kaniko' }
+      steps {
+        unstash 'built'
+        container('kaniko') {
+          sh '''
+            /kaniko/executor \
+              --dockerfile=Dockerfile \
+              --context="${WORKSPACE}" \
+              --destination="${IMAGE_REF}" \
+              --force
+          '''
+          // TLS 오류 발생 시 아래 옵션 추가:
+          // --skip-tls-verify-registry=${IMAGE_REGISTRY_URL}
+        }
+      }
+    }
+
+    // ── 4. GitOps 업데이트 (ArgoCD CD 트리거) ────────────────
+    // Pod: k8s-agent (jnlp - git 내장)
+    // unstash: source 복원 (k8s/deploy.yaml 포함) → 태그 수정 → gitops branch push
+    stage('GitOps Update') {
+      agent { label 'k8s-agent' }
+      steps {
+        unstash 'source'
+        withCredentials([usernamePassword(
+          credentialsId: "${GIT_ID}",
+          usernameVariable: 'GIT_USER',
+          passwordVariable: 'GIT_PASS'
+        )]) {
+          script {
+            env.REPO_PATH = env.GIT_URL.replaceFirst(/^https?:\/\//, '')
+          }
+          sh '''
+            set -eux
+            git config --global user.name  "skala-gitops"
+            git config --global user.email "skala@skala-ai.com"
+            git config --global --add safe.directory '*'
+
+            # deploy.yaml 이미지 태그 수정 후 /tmp 보관
+            sed -Ei "s|(image:[[:space:]]*)${IMAGE_REGISTRY}/${IMAGE_NAME}:[^[:space:]]*|\\1${IMAGE_REGISTRY}/${IMAGE_NAME}:${FINAL_IMAGE_TAG}|" "${GITOPS_MANIFEST}"
+            cp "${GITOPS_MANIFEST}" /tmp/deploy_updated.yaml
+
+            # gitops 브랜치로 전환 (원격에 없으면 신규 생성)
+            git fetch origin
+            git checkout -B "${GITOPS_BRANCH}" "origin/${GITOPS_BRANCH}" 2>/dev/null \
+              || git checkout -b "${GITOPS_BRANCH}"
+
+            mkdir -p "$(dirname ${GITOPS_MANIFEST})"
+            cp /tmp/deploy_updated.yaml "${GITOPS_MANIFEST}"
+
+            git add "${GITOPS_MANIFEST}"
+            if git diff --cached --quiet; then
+              echo "[SKIP] 이미 최신 이미지입니다: ${FINAL_IMAGE_TAG}"
+            else
+              git commit -m "[AUTO] image: ${IMAGE_NAME}:${FINAL_IMAGE_TAG}"
+              git remote set-url origin "https://${GIT_USER}:${GIT_PASS}@${REPO_PATH}"
+              git push origin "${GITOPS_BRANCH}"
+              echo "[DONE] gitops 브랜치 업데이트 완료"
+            fi
+          '''
+        }
+      }
+    }
+
+  } // stages
+
+  post {
+    success {
+      echo "CI 완료: ${env.IMAGE_REF} 빌드/푸시 및 gitops 브랜치 업데이트 완료"
+    }
+    failure {
+      echo "파이프라인 실패. 로그를 확인하세요."
+    }
+  }
+}

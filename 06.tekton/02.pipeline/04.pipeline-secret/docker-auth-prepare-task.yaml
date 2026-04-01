@@ -1,0 +1,33 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: prepare-docker-auth
+  namespace: skala-tekton
+spec:
+  workspaces:
+    - name: docker-secret
+      description: Docker 인증 정보가 포함된 Secret
+    - name: kaniko-docker-config
+      description: kaniko가 사용할 config.json이 저장될 PVC
+  steps:
+    - name: create-config
+      image: busybox
+      script: |
+        #!/bin/sh
+        set -e
+        
+        # 디렉토리 구조 생성
+        mkdir -p $(workspaces.kaniko-docker-config.path)/kaniko/.docker
+        
+        # Secret에서 인증 정보 복사
+        if [ -f "$(workspaces.docker-secret.path)/.dockerconfigjson" ]; then
+          cp $(workspaces.docker-secret.path)/.dockerconfigjson $(workspaces.kaniko-docker-config.path)/config.json
+          chmod 600 $(workspaces.kaniko-docker-config.path)/config.json
+          echo "Docker 인증 정보가 성공적으로 복사되었습니다."
+          cd $(workspaces.kaniko-docker-config.path)
+          pwd
+          ls -al
+        else
+          echo "Docker 인증 정보를 찾을 수 없습니다!"
+          exit 1
+        fi

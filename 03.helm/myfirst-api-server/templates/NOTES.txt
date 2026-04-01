@@ -1,0 +1,22 @@
+배포가 완료되었습니다!
+
+릴리즈 이름  : {{ .Release.Name }}
+네임스페이스 : {{ .Release.Namespace }}
+리소스 이름  : {{ include "myfirst-api-server.fullname" . }}
+
+{{- if .Values.ingress.enabled }}
+
+접속 URL:
+  https://{{ .Values.userName }}-{{ .Values.ingress.host }}/
+
+{{- else }}
+
+포트 포워딩으로 로컬 접속:
+  kubectl port-forward -n {{ .Release.Namespace }} \
+    svc/{{ include "myfirst-api-server.fullname" . }} 8080:{{ .Values.service.port }}
+  → http://localhost:8080
+
+{{- end }}
+
+배포 상태 확인:
+  kubectl get all -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}

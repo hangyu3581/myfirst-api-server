@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "springboot.appName" . }}
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "springboot.appName" . }}
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: {{ .Values.service.port | quote }}
+        prometheus.io/path: '/actuator/prometheus'
+      labels:
+        app: {{ include "springboot.appName" . }}
+    spec:
+      serviceAccountName: default
+      containers:
+      - name: myfirst-api-server
+        image: {{ include "springboot.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        env:
+        - name: USER_NAME
+          value: {{ include "springboot.userPrefix" . | quote }}
+        - name: NAMESPACE
+          value: {{ .Values.global.namespace | quote }}
+        - name: SPRING_PROFILES_ACTIVE
+          value: {{ .Values.spring.profilesActive | quote }}
+        ports:
+        - containerPort: {{ .Values.service.port }}
+          name: http
+        - containerPort: {{ .Values.service.mgmtPort }}
+          name: mgmt

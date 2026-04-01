@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "python.appName" . }}
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "python.appName" . }}
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: {{ .Values.service.mgmtPort | quote }}
+        prometheus.io/path: '/actuator/prometheus'
+      labels:
+        app: {{ include "python.appName" . }}
+    spec:
+      serviceAccountName: default
+      containers:
+      - name: my-app-python
+        image: {{ include "python.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        env:
+        - name: LOGGING_LEVEL
+          value: {{ .Values.loggingLevel | quote }}
+        - name: USER_NAME
+          value: {{ include "python.userPrefix" . | quote }}
+        - name: NAMESPACE
+          value: {{ .Values.global.namespace | quote }}
+        ports:
+        - containerPort: {{ .Values.service.port }}
+          name: http
+        - containerPort: {{ .Values.service.mgmtPort }}
+          name: mgmt

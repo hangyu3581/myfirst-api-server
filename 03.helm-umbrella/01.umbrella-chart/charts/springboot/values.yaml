@@ -1,0 +1,14 @@
+replicaCount: 1
+image:
+  tag: "1.0.0"
+  pullPolicy: Always
+service:
+  type: ClusterIP
+  port: 8080
+  mgmtPort: 8081
+ingress:
+  enabled: true
+  baseDomain: "skala25a.project.skala-ai.com"
+  clusterIssuer: "letsencrypt-prod"
+spring:
+  profilesActive: "local"

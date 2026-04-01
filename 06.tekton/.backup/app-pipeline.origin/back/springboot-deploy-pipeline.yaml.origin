@@ -1,0 +1,86 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: springboot-deploy-pipeline
+  namespace: skala-tekton
+spec:
+  params:
+    - name: git-url
+      type: string
+      description: "Git repository URL"
+    - name: git-revision
+      type: string
+      default: "main"
+      description: "Git branch to checkout"
+    - name: image-registry
+      type: string
+      description: "Docker image registry"
+    - name: image-name
+      type: string
+      description: "Docker image name"
+    - name: image-tag
+      type: string
+      default: "latest"
+      description: "Docker image tag"
+  workspaces:
+    - name: shared-workspace
+  tasks:
+    - name: git-clone
+      taskRef:
+        name: git-clone
+      params:
+        - name: url
+          value: "$(params.git-url)"
+        - name: revision
+          value: "$(params.git-revision)"
+      workspaces:
+        - name: output
+          workspace: shared-workspace
+
+    - name: maven-build
+      taskRef:
+        name: maven
+      runAfter:
+        - git-clone
+      params:
+        - name: GOALS
+          value:
+            - "clean"
+            - "package"
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    - name: kaniko-build-push
+      taskRef:
+        name: kaniko
+      runAfter:
+        - maven-build
+      params:
+        - name: DOCKERFILE
+          value: "Dockerfile"
+        - name: CONTEXT
+          value: "$(workspaces.source.path)"
+        - name: DESTINATION
+          value: "$(params.image-registry)/$(params.image-name):$(params.image-tag)"
+        - name: EXTRA_ARGS
+          value:
+            - "--skip-tls-verify"
+            - "--single-snapshot"
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    - name: k8s-deploy
+      taskRef:
+        name: kubectl
+      runAfter:
+        - kaniko-build-push
+      params:
+        - name: SCRIPT
+          value: |
+            kubectl apply -f $(workspaces.source.path)/k8s
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+

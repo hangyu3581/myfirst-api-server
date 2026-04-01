@@ -1,0 +1,39 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: git-auth-prepare
+  namespace: skala-tekton
+spec:
+  workspaces:
+    - name: credentials
+      description: 인증 정보가 포함된 workspace
+    - name: git-auth
+      description: git 인증 파일을 생성할 workspace
+  steps:
+    - name: create-git-credentials
+      image: ubuntu:20.04
+      script: |
+        #!/bin/bash
+        set -e
+        
+        # 필요한 디렉토리 생성
+        mkdir -p $(workspaces.git-auth.path)
+        
+        # username과 password 읽기
+        USERNAME=$(cat $(workspaces.credentials.path)/username)
+        PASSWORD=$(cat $(workspaces.credentials.path)/password)
+        
+        # .git-credentials 파일 생성
+        echo "https://$USERNAME:$PASSWORD@github.com" > $(workspaces.git-auth.path)/.git-credentials
+        
+        # .gitconfig 파일 생성
+        cat > $(workspaces.git-auth.path)/.gitconfig << EOF
+        [credential]
+          helper = store
+        EOF
+        
+        # 적절한 권한 설정
+        chmod 400 $(workspaces.git-auth.path)/.git-credentials
+        chmod 400 $(workspaces.git-auth.path)/.gitconfig
+        
+        echo "Git 인증 파일이 성공적으로 생성되었습니다."

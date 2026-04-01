@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: ${ARGO_PROJECT}
+  namespace: skala-argocd
+spec:
+  clusterResourceBlacklist:
+  - group: rbac.authorization.k8s.io
+    kind: ClusterRoleBinding
+  - group: rbac.authorization.k8s.io
+    kind: ClusterRole
+  destinations:
+  - name: skala-2025
+    namespace: skala-practice
+    server: https://96BD83E8CE5CE0396D006BC5CEB350B0.gr7.ap-northeast-2.eks.amazonaws.com
+  - name: skala-2025
+    namespace: ${NAMESPACE}
+    server: https://96BD83E8CE5CE0396D006BC5CEB350B0.gr7.ap-northeast-2.eks.amazonaws.com
+  namespaceResourceBlacklist:
+  - group: rbac.authorization.k8s.io
+    kind: RoleBinding
+  - group: '*'
+    kind: Role
+  orphanedResources: {}

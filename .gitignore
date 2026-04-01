@@ -1,0 +1,23 @@
+# Local environment and secrets
+env.properties
+dev.env
+*.local
+*.secret
+*.secrets
+
+# Backup folders and temp copies
+.backup/
+*.bak
+*.tmp
+*.orig
+zz.bk/
+
+# Build outputs
+target/
+build/
+out/
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store

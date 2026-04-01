@@ -1,0 +1,74 @@
+pipeline {
+  agent any
+  options {
+    timestamps()
+  }
+  environment {
+    // === 환경에 맞게 필요 시 수정 ===
+    GIT_CREDENTIALS_ID     = 'skala-github-id'          // GitHub PAT (Secret text) 가정
+    DOCKER_CREDENTIALS_ID  = 'skala-image-registry-id'  // Registry Username/Password 가정
+    IMAGE_REGISTRY_URL     = 'amdp-registry.skala-ai.com' // Harbor 도메인
+  }
+
+  stages {
+
+    stage('Check Git credentials (GitHub PAT)') {
+      steps {
+        withCredentials([usernamePassword(
+            credentialsId: "${GIT_CREDENTIALS_ID}", 
+            usernameVariable: 'GIT_USER', 
+            passwordVariable: 'GIT_PASS')]
+        ) {
+           sh '''
+             set -e
+             code=$(curl -s -o response.json -w "%{http_code}" \
+               -u "${GIT_USER}:${GIT_PASS}" \
+               "https://api.github.com/user")
+        
+             echo "response ----"
+             cat response.json
+
+             if [ "$code" -eq 200 ]; then
+               echo "[OK] GitHub 계정 인증 유효 (HTTP ${code})"
+             else
+               echo "[FAIL] GitHub 계정 인증 실패 (HTTP ${code})"
+               exit 1
+             fi
+           '''
+        }
+      }
+    }
+
+    stage('Check Docker registry credentials (Harbor)') {
+      steps {
+        withCredentials([usernamePassword(
+            credentialsId: "${DOCKER_CREDENTIALS_ID}", 
+            usernameVariable: 'REG_USER', 
+            passwordVariable: 'REG_PASS')]
+        ) {
+          sh '''
+            set -e
+            # 목록 조회로 2xx 확인 (권한 범위에 따라 200/206 등 나올 수 있음)
+            code=$(curl -s -o response.json -w "%{http_code}" \
+              -u "${REG_USER}:${REG_PASS}" \
+              "https://${IMAGE_REGISTRY_URL}/api/v2.0/projects?page=1&page_size=1")
+
+             echo "response ----"
+             cat response.json
+
+            if [ "$code" -ge 200 ] && [ "$code" -lt 300 ]; then
+              echo "[OK] Registry 자격증명 유효 (HTTP ${code})"
+            else
+              echo "[FAIL] Registry 자격증명 검증 실패 (HTTP ${code})"
+              echo "      - 도메인/경로 확인: https://${IMAGE_REGISTRY_URL}/api/v2.0/projects"
+              echo "      - 계정 권한: 최소 한 개 프로젝트 조회 권한 필요"
+              exit 1
+            fi
+          '''
+        }
+      }
+    }
+
+  }
+}
+

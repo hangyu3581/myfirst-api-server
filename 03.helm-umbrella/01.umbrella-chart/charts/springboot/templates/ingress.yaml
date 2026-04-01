@@ -1,0 +1,26 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "springboot.appName" . }}
+  namespace: {{ .Values.global.namespace }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.clusterIssuer }}
+spec:
+  ingressClassName: public-nginx
+  rules:
+  - host: {{ include "springboot.userPrefix" . }}-ingress.{{ .Values.ingress.baseDomain }}
+    http:
+      paths:
+      - backend:
+          service:
+            name: {{ include "springboot.appName" . }}
+            port:
+              number: {{ .Values.service.port }}
+        path: /
+        pathType: Prefix
+  tls:
+  - hosts:
+    - {{ printf "%s-ingress.%s" (include "springboot.userPrefix" .) .Values.ingress.baseDomain | quote }}
+    secretName: {{ include "springboot.userPrefix" . }}-ingress-project-tls-cert
+{{- end }}

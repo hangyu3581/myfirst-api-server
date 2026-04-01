@@ -1,0 +1,35 @@
+apiVersion: tekton.dev/v1beta1
+kind: PipelineRun
+metadata:
+  name: springboot-deploy-run-v00005
+  namespace: skala-tekton
+spec:
+  pipelineRef:
+    name: springboot-push-pipeline
+  workspaces:
+    - name: shared-workspace
+      persistentVolumeClaim:
+        claimName: shared-workspace-pvc  # shared-workspace PVC를 참조
+    - name: maven-settings
+      persistentVolumeClaim:
+        claimName: shared-workspace-pvc  # shared-workspace PVC를 참조
+    - name: maven-local-repo
+      persistentVolumeClaim:
+        claimName: shared-workspace-pvc  # shared-workspace PVC를 참조
+  podTemplate:
+    securityContext:
+      fsGroup: 0  # 볼륨을 사용하는 그룹 ID
+      runAsUser: 0  # Pod를 실행하는 사용자 ID
+      runAsGroup: 0  # Pod를 실행하는 그룹 ID
+  params:
+    - name: git-url
+      value: "https://github.com/himang10/tekton-source.git"
+    - name: git-revision
+      value: "master"
+    - name: image-registry
+      value: "amdp-registry.skala-ai.com/skala25a"
+    - name: image-name
+      value: "springboot-app"
+    - name: image-tag
+      value: "1.0"
+  serviceAccountName: pipeline-sa

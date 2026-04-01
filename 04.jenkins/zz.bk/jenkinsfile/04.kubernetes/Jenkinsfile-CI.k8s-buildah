@@ -1,0 +1,240 @@
+pipeline {
+  agent {
+    kubernetes {
+      cloud 'skala'
+      yaml """
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    jenkins: single-pod-build
+spec:
+  restartPolicy: Never
+  volumes:
+    - name: ws
+      emptyDir: {}                 # 모든 컨테이너가 공유할 Jenkins 워크스페이스
+    - name: maven-cache
+      emptyDir: {}                 # Maven 캐시(선택)
+  containers:
+    - name: jnlp
+      image: jenkins/inbound-agent:latest
+      volumeMounts:
+        - name: ws
+          mountPath: /home/jenkins/agent
+
+    - name: git
+      image: alpine/git:latest
+      command: ["sh","-c"]
+      args: ["cat"]                # 컨테이너 keep-alive
+      tty: true
+      volumeMounts:
+        - name: ws
+          mountPath: /home/jenkins/agent
+
+    - name: maven
+      image: maven:3.8.5-openjdk-17
+      command: ["sh","-c"]
+      args: ["cat"]
+      tty: true
+      volumeMounts:
+        - name: ws
+          mountPath: /home/jenkins/agent
+        - name: maven-cache
+          mountPath: /root/.m2
+
+    - name: buildah
+      image: quay.io/buildah/stable:latest
+      command: ["sh","-c"]
+      args: ["cat"]
+      tty: true
+      securityContext:
+        runAsUser: 0               # buildah 호환 위해 root (privileged 불필요)
+      volumeMounts:
+        - name: ws
+          mountPath: /home/jenkins/agent
+"""
+    }
+  }
+
+  environment {
+    // === 사용자 수정 영역 ===
+    GIT_URL                = 'https://github.com/himang10/myfirst-api-server.git'
+    GIT_BRANCH             = 'master'            // 또는 main
+    GIT_ID                 = 'skala-github-id'   // GitHub PAT credential ID
+    // =======================
+    IMAGE_REGISTRY_URL     = 'amdp-registry.skala-ai.com'
+    IMAGE_REGISTRY_PROJECT = 'skala25a'
+    IMAGE_NAME             = 'sk000-myfirst-api-server'
+    IMAGE_TAG              = '1.0.0'
+
+    DOCKER_CREDENTIAL_ID   = 'skala-image-registry-id'  // Harbor 인증 정보 ID
+    K8S_NAMESPACE          = 'skala-practice'
+  }
+
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+  }
+
+  stages {
+    stage('Clone Repository') {
+      steps {
+        container('git') {
+          dir("${env.WORKSPACE}") {
+            git branch: "${GIT_BRANCH}",
+                url: "${GIT_URL}",
+                credentialsId: "${GIT_ID}"
+          }
+        }
+      }
+    }
+
+    stage('Build with Maven') {
+      steps {
+        container('maven') {
+          dir("${env.WORKSPACE}") {
+            echo 'Build with Maven'
+            sh 'mvn clean package -DskipTests'
+          }
+        }
+      }
+    }
+
+    // 태그/이미지 경로 계산 (메타)
+    stage('Compute Image Meta') {
+      steps {
+        container('maven') {
+          script {
+            def hashcode = sh(script: "date +%s%N | sha256sum | cut -c1-12", returnStdout: true).trim()
+            env.FINAL_IMAGE_TAG = "${IMAGE_TAG}-${hashcode}"
+            env.IMAGE_REGISTRY  = "${env.IMAGE_REGISTRY_URL}/${env.IMAGE_REGISTRY_PROJECT}"
+            env.REG_HOST        = env.IMAGE_REGISTRY_URL
+            env.IMAGE_REF       = "${env.IMAGE_REGISTRY}/${IMAGE_NAME}:${env.FINAL_IMAGE_TAG}"
+
+            echo "REG_HOST: ${env.REG_HOST}"
+            echo "IMAGE_REF: ${env.IMAGE_REF}"
+          }
+        }
+      }
+    }
+
+    // (선택) Buildah 설정 파일 확인
+    stage('Prepare Buildah Config') {
+      steps {
+        container('buildah') {
+          sh '''
+            set -eux
+            mkdir -p /etc/containers
+            cat > /etc/containers/registries.conf <<'CONF'
+unqualified-search-registries = ["docker.io","quay.io","registry.fedoraproject.org"]
+CONF
+            cat /etc/containers/registries.conf
+          '''
+        }
+      }
+    }
+
+    // 이미지 빌드 & 푸시 (Buildah)
+    stage('Image Build & Push (Buildah)') {
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: "${DOCKER_CREDENTIAL_ID}",
+          usernameVariable: 'REG_USER',
+          passwordVariable: 'REG_PASS'
+        )]) {
+          container('buildah') {
+            dir("${env.WORKSPACE}") {
+              sh '''
+                set -eux
+                echo "Login to ${REG_HOST} as ${REG_USER}"
+                buildah login -u "${REG_USER}" -p "${REG_PASS}" "${REG_HOST}"
+
+                # vfs + chroot → privileged 불필요
+                buildah bud  --storage-driver vfs --isolation chroot -t "${IMAGE_REF}" .
+                buildah push --storage-driver vfs "${IMAGE_REF}"
+              '''
+            }
+          }
+        }
+      }
+    }
+
+    // k8s 리소스 파일(deploy.yaml) 수정
+    stage('Update K8s Manifests') {
+      steps {
+        container('maven') {
+          dir("${env.WORKSPACE}") {
+            sh '''
+              set -eux
+              test -f ./k8s/deploy.yaml
+
+              echo "--- BEFORE ---"
+              grep -n 'image:' ./k8s/deploy.yaml || true
+
+              sed -Ei "s#(image:[[:space:]]*$IMAGE_REGISTRY/$IMAGE_NAME)[^[:space:]]+#\\1:$FINAL_IMAGE_TAG#" ./k8s/deploy.yaml
+
+              echo "--- AFTER ---"
+              grep -n 'image:' ./k8s/deploy.yaml || true
+            '''
+          }
+        }
+      }
+    }
+
+    // deployment yaml의 Git 커밋/푸시
+    stage('Git Commit & Push (gitops)') {
+      steps {
+        container('git') {
+          dir("${env.WORKSPACE}") {
+            sh '''
+              set -eux
+              git config --global --add safe.directory '*'
+              git config --global user.name "skala-gitops"
+              git config --global user.email "skala@skala-ai.com"
+
+              git fetch origin || true
+              cp ./k8s/deploy.yaml ./k8s/deploy.yaml.backup
+
+              # gitops 브랜치 체크아웃
+              if git show-ref --verify --quiet refs/heads/gitops || git show-ref --verify --quiet refs/remotes/origin/gitops; then
+                git checkout -f gitops || git checkout -B gitops origin/gitops
+              else
+                git checkout -b gitops
+              fi
+
+              cp ./k8s/deploy.yaml.backup ./k8s/deploy.yaml
+              sed -Ei "s#(image:[[:space:]]*${IMAGE_REGISTRY}/${IMAGE_NAME})[^[:space:]]+#\\1:${FINAL_IMAGE_TAG}#" ./k8s/deploy.yaml
+              rm -f ./k8s/deploy.yaml.backup
+
+              git add ./k8s/deploy.yaml || true
+              git status
+            '''
+          }
+        }
+
+        withCredentials([usernamePassword(
+          credentialsId: "${env.GIT_ID}",
+          usernameVariable: 'GIT_PUSH_USER',
+          passwordVariable: 'GIT_PUSH_PASSWORD'
+        )]) {
+          container('git') {
+            dir("${env.WORKSPACE}") {
+              script { env.GIT_REPO_PATH = env.GIT_URL.replaceFirst(/^https?:\\/\\//, '') }
+              sh '''
+                set -eux
+                if ! git diff --cached --quiet; then
+                  git commit -m "[AUTO] Update deploy.yaml with image $FINAL_IMAGE_TAG"
+                  git remote set-url origin https://$GIT_PUSH_USER:$GIT_PUSH_PASSWORD@$GIT_REPO_PATH
+                  git push origin gitops --force
+                  echo "Pushed to gitops"
+                else
+                  echo "No changes to commit"
+                fi
+              '''
+            }
+          }
+        }
+      }
+    }
+  }
+}

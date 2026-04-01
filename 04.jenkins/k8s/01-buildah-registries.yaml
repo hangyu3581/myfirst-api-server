@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sk199-buildah-registries-conf
+  namespace: skala-practice
+  labels:
+    app: sk199-jenkins
+    component: buildah-config
+data:
+  registries.conf: |
+    unqualified-search-registries = ["docker.io","quay.io","registry.fedoraproject.org"]
+
+  containers.conf: |
+    [network]
+    network_backend = "cni"

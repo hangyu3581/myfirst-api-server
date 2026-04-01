@@ -1,0 +1,213 @@
+pipeline {
+  agent {
+    kubernetes {
+      cloud 'skala'
+      yaml """
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    jenkins: single-pod-build
+spec:
+  restartPolicy: Never
+  volumes:
+    - name: ws
+      emptyDir: {}                 # 모든 컨테이너가 공유할 Jenkins 워크스페이스
+    - name: maven-cache
+      emptyDir: {}                 # Maven 캐시(선택)
+    - name: kaniko-secret
+      secret:
+        secretName: harbor-registry-secret
+        items:
+        - key: .dockerconfigjson
+          path: config.json
+  containers:
+    - name: jnlp
+      image: jenkins/inbound-agent:latest
+      volumeMounts:
+        - name: ws
+          mountPath: /home/jenkins/agent
+
+    - name: git
+      image: alpine/git:latest
+      command: ["sh","-c"]
+      args: ["cat"]
+      tty: true
+      volumeMounts:
+        - name: ws
+          mountPath: /home/jenkins/agent
+
+    - name: maven
+      image: maven:3.8.5-openjdk-17
+      command: ["sh","-c"]
+      args: ["cat"]
+      tty: true
+      volumeMounts:
+        - name: ws
+          mountPath: /home/jenkins/agent
+        - name: maven-cache
+          mountPath: /root/.m2
+
+    - name: kaniko
+      image: gcr.io/kaniko-project/executor:debug
+      command: ["/busybox/sh","-c"]
+      args: ["cat"]
+      tty: true
+      env:
+        - name: DOCKER_CONFIG
+          value: /kaniko/.docker
+      volumeMounts:
+        - name: ws
+          mountPath: /home/jenkins/agent
+        - name: kaniko-secret
+          mountPath: /kaniko/.docker
+          readOnly: true
+"""
+    }
+  }
+
+  environment {
+    GIT_URL  = 'https://github.com/himang10/myfirst-api-server.git'
+    GIT_BRANCH = 'master'
+    GIT_ID   = 'skala-github-id'
+
+    IMAGE_REGISTRY_URL     = 'amdp-registry.skala-ai.com'
+    IMAGE_REGISTRY_PROJECT = 'skala25a'
+    IMAGE_NAME             = 'sk000-myfirst-api-server'
+    IMAGE_TAG              = '1.0.0'
+
+    DOCKER_CREDENTIAL_ID   = 'skala-image-registry-id'  // (Kaniko는 K8s Secret을 사용 중)
+    K8S_NAMESPACE          = 'skala-practice'
+  }
+
+  options { disableConcurrentBuilds(); timestamps() }
+
+  stages {
+    stage('Clone Repository') {
+      steps {
+        container('git') {
+          dir("${env.WORKSPACE}") {
+            git branch: "${GIT_BRANCH}", url: "${GIT_URL}", credentialsId: "${GIT_ID}"
+          }
+        }
+      }
+    }
+
+    stage('Build with Maven') {
+      steps {
+        container('maven') {
+          dir("${env.WORKSPACE}") {
+            sh 'mvn clean package -DskipTests'
+          }
+        }
+      }
+    }
+
+    stage('Compute Image Meta') {
+      steps {
+        container('maven') {
+          script {
+            def hashcode = sh(script: "date +%s%N | sha256sum | cut -c1-12", returnStdout: true).trim()
+            env.FINAL_IMAGE_TAG = "${IMAGE_TAG}-${hashcode}"
+            env.IMAGE_REGISTRY  = "${env.IMAGE_REGISTRY_URL}/${env.IMAGE_REGISTRY_PROJECT}"
+            env.REG_HOST        = env.IMAGE_REGISTRY_URL
+            env.IMAGE_REF       = "${env.IMAGE_REGISTRY}/${IMAGE_NAME}:${env.FINAL_IMAGE_TAG}"
+            echo "REG_HOST: ${env.REG_HOST}"
+            echo "IMAGE_REF: ${env.IMAGE_REF}"
+          }
+        }
+      }
+    }
+
+    stage('Docker Build & Push') {
+      steps {
+        container('kaniko') {
+          dir("${env.WORKSPACE}") {
+            sh '''
+              /kaniko/executor \
+                --dockerfile=Dockerfile \
+                --context="${WORKSPACE}" \
+                --destination="${IMAGE_REF}" \
+                --force
+            '''
+            // 필요 시 프라이빗/자체서명 인증서 환경:
+            // --skip-tls-verify-registry=${REG_HOST}
+            // 또는 Harbor에 루트 CA를 신뢰시키는 방식 사용
+          }
+        }
+      }
+    }
+
+    stage('Update K8s Manifests') {
+      steps {
+        container('maven') {
+          dir("${env.WORKSPACE}") {
+            sh '''
+              set -eux
+              test -f ./k8s/deploy.yaml
+              echo "--- BEFORE ---"
+              grep -n 'image:' ./k8s/deploy.yaml || true
+              sed -Ei "s#(image:[[:space:]]*$IMAGE_REGISTRY/$IMAGE_NAME)[^[:space:]]+#\\1:$FINAL_IMAGE_TAG#" ./k8s/deploy.yaml
+              echo "--- AFTER ---"
+              grep -n 'image:' ./k8s/deploy.yaml || true
+            '''
+          }
+        }
+      }
+    }
+
+    stage('Git Commit & Push (gitops)') {
+      steps {
+        container('git') {
+          dir("${env.WORKSPACE}") {
+            sh '''
+              set -eux
+              git config --global --add safe.directory '*'
+              git config --global user.name "skala-gitops"
+              git config --global user.email "skala@skala-ai.com"
+
+              git fetch origin || true
+              cp ./k8s/deploy.yaml ./k8s/deploy.yaml.backup
+
+              if git show-ref --verify --quiet refs/heads/gitops || git show-ref --verify --quiet refs/remotes/origin/gitops; then
+                git checkout -f gitops || git checkout -B gitops origin/gitops
+              else
+                git checkout -b gitops
+              fi
+
+              cp ./k8s/deploy.yaml.backup ./k8s/deploy.yaml
+              sed -Ei "s#(image:[[:space:]]*${IMAGE_REGISTRY}/${IMAGE_NAME})[^[:space:]]+#\\1:${FINAL_IMAGE_TAG}#" ./k8s/deploy.yaml
+              rm -f ./k8s/deploy.yaml.backup
+
+              git add ./k8s/deploy.yaml || true
+              git status
+            '''
+          }
+        }
+
+        withCredentials([usernamePassword(
+          credentialsId: "${env.GIT_ID}",
+          usernameVariable: 'GIT_PUSH_USER',
+          passwordVariable: 'GIT_PUSH_PASSWORD'
+        )]) {
+          container('git') {
+            dir("${env.WORKSPACE}") {
+              script { env.GIT_REPO_PATH = env.GIT_URL.replaceFirst(/^https?:\/\//, '') }
+              sh '''
+                set -eux
+                if ! git diff --cached --quiet; then
+                  git commit -m "[AUTO] Update deploy.yaml with image $FINAL_IMAGE_TAG"
+                  git remote set-url origin https://$GIT_PUSH_USER:$GIT_PUSH_PASSWORD@$GIT_REPO_PATH
+                  git push origin gitops --force
+                  echo "Pushed to gitops"
+                else
+                  echo "No changes to commit"
+                fi
+              '''
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: file-explorer
+  namespace: skala-tekton
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: file-explorer
+  template:
+    metadata:
+      labels:
+        app: file-explorer
+    spec:
+      containers:
+      - name: explorer
+        image: ubuntu:20.04
+        command: ["sleep"]
+        args: ["infinity"]
+        volumeMounts:
+        - name: shared-storage
+          mountPath: /shared-data
+      volumes:
+      - name: shared-storage
+        persistentVolumeClaim:
+          claimName: sk000-shared-workspace-pvc

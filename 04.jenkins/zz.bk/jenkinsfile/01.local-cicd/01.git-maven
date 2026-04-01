@@ -1,0 +1,40 @@
+pipeline {
+  agent any
+
+  environment {
+    // === 사용자 수정 영역 ===
+    GIT_URL                = 'https://github.com/himang10/myfirst-api-server.git'
+    GIT_BRANCH             = 'master'            // 또는 main
+    GIT_ID                 = 'skala-github-id'   // GitHub PAT credential ID
+    IMAGE_NAME             = 'sk000-myfirst-api-server'    
+    // =======================
+    IMAGE_TAG              = '1.0.0'    
+    IMAGE_REGISTRY_URL     = 'amdp-registry.skala-ai.com'
+    IMAGE_REGISTRY_PROJECT = 'skala25a'
+
+    DOCKER_CREDENTIAL_ID   = 'skala-image-registry-id'  // Harbor 인증 정보 ID
+    K8S_NAMESPACE          = 'skala-practice'
+  }
+
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+  }
+
+  stages {
+    stage('Clone Repository') {
+      steps {
+        echo 'Clone Repository'
+        git branch: "${GIT_BRANCH}", url: "${GIT_URL}", credentialsId: "${GIT_ID}"
+        sh 'ls -al'
+      }
+    }
+    stage('Build with Maven') {
+      steps {
+        echo 'Build with Maven'
+        sh 'mvn clean package -DskipTests'
+        sh 'ls -al'
+      }
+    }
+  }
+}

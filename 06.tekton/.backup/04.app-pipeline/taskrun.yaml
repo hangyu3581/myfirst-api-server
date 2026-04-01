@@ -1,0 +1,24 @@
+apiVersion: tekton.dev/v1beta1
+kind: TaskRun
+metadata:
+  name: springboot-deploy-task-run-t0001
+  namespace: skala-tekton
+spec:
+  taskRef:
+    name: kubernetes-actions
+  params:
+    - name: script
+      value: |
+        kubectl apply -f $(workspaces.manifest-dir.path)/k8s
+        kubectl get deployment
+    - name: args
+      value: []
+  workspaces:
+    - name: manifest-dir
+      persistentVolumeClaim:
+        claimName: shared-workspace-pvc  # git-clone된 파일이 있는 PVC
+    - name: kubeconfig-dir
+      configMap:
+        name: kubeconfig
+  serviceAccountName: pipeline-sa
+

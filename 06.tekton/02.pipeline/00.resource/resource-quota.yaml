@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: pod-quota
+  namespace: skala-tekton
+spec:
+  hard:
+    pods: "15"  # 네임스페이스에서 최대 10개 Pod만 허용

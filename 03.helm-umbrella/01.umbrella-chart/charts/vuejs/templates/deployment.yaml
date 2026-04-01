@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vuejs.appName" . }}
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "vuejs.appName" . }}
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/port: {{ .Values.service.mgmtPort | quote }}
+        prometheus.io/path: '/actuator/prometheus'
+      labels:
+        app: {{ include "vuejs.appName" . }}
+    spec:
+      serviceAccountName: default
+      containers:
+      - name: myfirst-frontend
+        image: {{ include "vuejs.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        env:
+        - name: LOGGING_LEVEL
+          value: {{ .Values.loggingLevel | quote }}
+        - name: USER_NAME
+          value: {{ include "vuejs.userPrefix" . | quote }}
+        - name: NAMESPACE
+          value: {{ .Values.global.namespace | quote }}
+        ports:
+        - containerPort: 80
+          name: http
+        - containerPort: {{ .Values.service.mgmtPort }}
+          name: mgmt

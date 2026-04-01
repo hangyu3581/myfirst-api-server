@@ -1,0 +1,280 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: ci-pipeline
+  namespace: skala-tekton
+spec:
+  params:
+    - name: git-url
+      type: string
+      description: Git repository URL
+    - name: git-revision
+      type: string
+      default: master
+      description: Git branch to checkout
+    - name: image-registry-url
+      type: string
+      description: Docker image registry host (e.g., amdp-registry.skala-ai.com)
+    - name: image-registry-project
+      type: string
+      description: Project/namespace in registry (e.g., skala25a)
+    - name: image-name
+      type: string
+      description: Docker image name (e.g., sk000-myfirst-api-server)
+    - name: image-tag
+      type: string
+      default: "latest"
+      description: Base image tag before adding hash suffix (e.g., 1.0.0)
+    - name: dockerfile
+      type: string
+      default: "Dockerfile"
+    - name: context
+      type: string
+      default: "."
+    - name: k8s-deploy-path
+      type: string
+      default: "k8s/deploy.yaml"
+    - name: maven-image
+      type: string
+      default: "maven:3.9.6-eclipse-temurin-17"
+    - name: maven-goals
+      type: array
+      default: ["clean","package","-DskipTests"]
+    - name: git-user-name
+      type: string
+      default: "skala-gitops"
+    - name: git-user-email
+      type: string
+      default: "skala@skala-ai.com"
+    - name: skip-tls-verify-registry
+      type: string
+      default: "false"
+      description: "true/false for Kaniko --skip-tls-verify-registry"
+  workspaces:
+    - name: shared-workspace          # 소스/빌드 산출물 공유
+    - name: maven-settings
+    - name: maven-local-repo
+  tasks:
+
+    # 1) Git Clone (tektoncd-catalog: git-clone)
+    - name: git-clone
+      taskRef:
+        name: git-clone
+        kind: Task
+      params:
+        - name: url
+          value: "$(params.git-url)"
+        - name: revision
+          value: "$(params.git-revision)"
+        - name: deleteExisting
+          value: "true"
+      workspaces:
+        - name: output
+          workspace: shared-workspace
+
+    # 2) Maven Build (tektoncd-catalog: maven)
+    - name: maven-build
+      taskRef:
+        name: maven
+        kind: Task
+      runAfter: ["git-clone"]
+      params:
+        - name: MAVEN_IMAGE
+          value: "$(params.maven-image)"
+        - name: GOALS
+          value: ["$(params.maven-goals)"]
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+        - name: maven-settings
+          workspace: maven-settings
+        - name: maven-local-repo
+          workspace: maven-local-repo
+
+    # 3) Compute Image Meta (custom: results 산출) - 파라미터 추가 필요!
+    - name: compute-image-meta
+      runAfter: ["maven-build"]
+      params:
+        - name: image-tag
+          value: "$(params.image-tag)"
+        - name: image-registry-url
+          value: "$(params.image-registry-url)"
+        - name: image-registry-project
+          value: "$(params.image-registry-project)"
+        - name: image-name
+          value: "$(params.image-name)"
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+      taskSpec:
+        params:
+          - name: image-tag
+          - name: image-registry-url
+          - name: image-registry-project
+          - name: image-name
+        workspaces:
+          - name: source
+        results:
+          - name: final-image-tag
+            description: "e.g., 1.0.0-<12char>"
+          - name: image-registry
+            description: "e.g., amdp-registry.../skala25a"
+          - name: image-ref
+            description: "e.g., REGISTRY/PROJECT/IMAGE:TAG"
+          - name: registry-host
+            description: "host only"
+        steps:
+          - name: make-meta
+            image: alpine/git:latest
+            workingDir: "$(workspaces.source.path)"
+            script: |
+              #!/bin/sh
+              set -eu
+              # 가능한 경우 Git 커밋 해시로, 없으면 시간 해시로
+              if git rev-parse --short=12 HEAD >/dev/null 2>&1; then
+                SUFFIX="$(git rev-parse --short=12 HEAD)"
+              else
+                SUFFIX="$(date +%s%N | sha256sum | cut -c1-12)"
+              fi
+
+              FINAL_TAG="$(params.image-tag)-${SUFFIX}"
+              REGISTRY="$(params.image-registry-url)/$(params.image-registry-project)"
+              IMAGE_REF="${REGISTRY}/$(params.image-name):${FINAL_TAG}"
+
+              printf "%s" "${FINAL_TAG}" > "$(results.final-image-tag.path)"
+              printf "%s" "${REGISTRY}"   > "$(results.image-registry.path)"
+              printf "%s" "${IMAGE_REF}"  > "$(results.image-ref.path)"
+              printf "%s" "$(params.image-registry-url)" > "$(results.registry-host.path)"
+
+    # 4) Kaniko Build & Push (tektoncd-catalog: kaniko)
+    - name: kaniko-build-push
+      taskRef:
+        name: kaniko
+        kind: Task
+      runAfter: ["compute-image-meta"]
+      params:
+        - name: IMAGE
+          value: "$(tasks.compute-image-meta.results.image-ref)"
+        - name: DOCKERFILE
+          value: "$(params.dockerfile)"
+        - name: CONTEXT
+          value: "$(params.context)"
+        - name: EXTRA_ARGS
+          value:
+            - "--destination=$(tasks.compute-image-meta.results.image-ref)"
+            - "--force"
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+    # 5) Update K8s Manifests (deploy.yaml 이미지 태그 치환)
+    - name: update-manifests
+      runAfter: ["kaniko-build-push"]
+      params:
+        - name: k8s-deploy-path
+          value: "$(params.k8s-deploy-path)"
+        - name: image-registry
+          value: "$(tasks.compute-image-meta.results.image-registry)"
+        - name: image-name
+          value: "$(params.image-name)"
+        - name: final-image-tag
+          value: "$(tasks.compute-image-meta.results.final-image-tag)"
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+      taskSpec:
+        params:
+          - name: k8s-deploy-path
+          - name: image-registry
+          - name: image-name
+          - name: final-image-tag
+        workspaces:
+          - name: source
+        steps:
+          - name: sed-replace
+            image: alpine:3.20
+            workingDir: "$(workspaces.source.path)"
+            script: |
+              #!/bin/sh
+              set -eux
+              test -f "$(params.k8s-deploy-path)"
+              echo "--- BEFORE ---"
+              grep -n 'image:' "$(params.k8s-deploy-path)" || true
+              # image: REGISTRY/IMAGE:<oldtag> -> image: REGISTRY/IMAGE:<final>
+              sed -Ei "s#(image:[[:space:]]*$(params.image-registry)/$(params.image-name))[^[:space:]]+#\\1:$(params.final-image-tag)#" "$(params.k8s-deploy-path)"
+              echo "--- AFTER ---"
+              grep -n 'image:' "$(params.k8s-deploy-path)" || true
+
+    # 6) Git Commit & Push (gitops 브랜치로)
+    - name: git-commit-push
+      runAfter: ["update-manifests"]
+      params:
+        - name: git-branch
+          value: "gitops"
+        - name: final-image-tag
+          value: "$(tasks.compute-image-meta.results.final-image-tag)"
+        - name: k8s-deploy-path
+          value: "$(params.k8s-deploy-path)"
+        - name: git-user-name
+          value: "$(params.git-user-name)"
+        - name: git-user-email
+          value: "$(params.git-user-email)"
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+      taskSpec:
+        params:
+          - name: git-branch
+            default: "gitops"
+          - name: final-image-tag
+          - name: k8s-deploy-path
+          - name: git-user-name
+          - name: git-user-email
+        workspaces:
+          - name: source
+        steps:
+          - name: push
+            image: alpine/git:latest
+            workingDir: "$(workspaces.source.path)"
+            env:
+              - name: HOME
+                value: /tekton/home
+            script: |
+              #!/bin/sh
+              set -eux
+              git config --global --add safe.directory '*'
+              git config --global user.name  "$(params.git-user-name)"
+              git config --global user.email "$(params.git-user-email)"
+
+              echo "=== 현재 로컬 상태 확인 ==="
+              git status
+              git branch
+              
+              echo "=== 변경된 파일 확인 ==="
+              cat "$(params.k8s-deploy-path)"
+              
+              # 원격 정보 가져오기
+              git fetch origin || true
+              
+              # 현재 브랜치에서 gitops 브랜치 생성/체크아웃 (로컬 변경사항 유지)
+              git checkout -b "$(params.git-branch)" 2>/dev/null || git checkout "$(params.git-branch)" 2>/dev/null || true
+              
+              # 변경사항 스테이징
+              git add "$(params.k8s-deploy-path)"
+              
+              echo "=== 스테이징된 변경사항 확인 ==="
+              git diff --cached
+              
+              # 커밋 및 강제 푸시
+              if ! git diff --cached --quiet; then
+                git commit -m "[AUTO] Update deploy.yaml with image $(params.final-image-tag)"
+                git push origin "$(params.git-branch)" --force
+                echo "Successfully force pushed to $(params.git-branch)"
+              else
+                echo "No changes detected, forcing update with timestamp"
+                echo "# Updated at $(date)" >> "$(params.k8s-deploy-path)"
+                git add "$(params.k8s-deploy-path)"
+                git commit -m "[AUTO] Force update deploy.yaml with image $(params.final-image-tag) at $(date)"
+                git push origin "$(params.git-branch)" --force
+                echo "Force pushed with timestamp to $(params.git-branch)"
+              fi

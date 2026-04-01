@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels:
+    {{- include "mychart.labels" . | nindent 4 }}
+data:
+  app: {{ .Values.name | upper | quote }}
+  config.yaml: |-
+    {{ toYaml .Values.config | nindent 4 }}

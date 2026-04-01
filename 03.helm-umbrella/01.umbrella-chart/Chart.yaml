@@ -1,0 +1,12 @@
+apiVersion: v2
+name: myfirst-helm
+description: Spring Boot API, Vue.js Frontend, Python App, MariaDB 통합 Helm Chart
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+dependencies:
+  - name: mariadb
+    version: "20.5.5"
+    repository: https://charts.bitnami.com/bitnami
+    condition: mariadb.enabled

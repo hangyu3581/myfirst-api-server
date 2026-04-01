@@ -1,0 +1,247 @@
+# ===========================================================
+# myfirst-helm 전역 Values
+# userName: 접두어로 사용되는 사용자 번호 (기본값: "199")
+#   예) userName=199 → 리소스 이름 sk199-... 으로 생성됨
+# ===========================================================
+global:
+  userName: "199"                                          # 변경 가능 (예: "200", "001")
+  namespace: "skala-practice"
+  appImageRegistry: "amdp-registry.skala-ai.com/skala25a"  # imageRegistry 대신 사용 (Bitnami global.imageRegistry 충돌 방지)
+
+# ===========================================================
+# Spring Boot API Server
+# ===========================================================
+springboot:
+  replicaCount: 1
+  image:
+    tag: "1.0.0"
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    port: 8080
+    mgmtPort: 8081
+  ingress:
+    enabled: true
+    baseDomain: "skala25a.project.skala-ai.com"
+    clusterIssuer: "letsencrypt-prod"
+  spring:
+    profilesActive: "local"
+
+# ===========================================================
+# Vue.js Frontend
+# ===========================================================
+vuejs:
+  replicaCount: 1
+  image:
+    tag: "1.0.0"
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    port: 8080
+    mgmtPort: 8081
+    targetPort: 80
+  loggingLevel: "DEBUG"
+
+# ===========================================================
+# Python App
+# ===========================================================
+python:
+  replicaCount: 1
+  image:
+    tag: "1.0.0"
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    port: 8080
+    mgmtPort: 8081
+  loggingLevel: "DEBUG"
+
+# ===========================================================
+# MariaDB (Bitnami Chart dependency) - 04.mariadb/custom-values.yaml 기준
+# ===========================================================
+mariadb:
+  enabled: true
+  global:
+    storageClass: "gp2"
+    security:
+      allowInsecureImages: true
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/mariadb
+    tag: "11.4.6-debian-12-r0"
+    pullPolicy: IfNotPresent
+  auth:
+    rootPassword: "Skala25a!23$"
+    database: "cloud"
+    username: "skala"
+    password: "Skala25a!23$"
+    replicationUser: "skala"
+    replicationPassword: "Skala25a!23$"
+  primary:
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+      requests:
+        cpu: 500m
+        memory: 512Mi
+    persistence:
+      enabled: true
+      storageClass: "gp2"
+      accessModes:
+        - ReadWriteOnce
+      size: 20Gi
+    service:
+      type: ClusterIP
+      ports:
+        mysql: 3306
+    configuration: |
+      [mysqld]
+      skip-name-resolve
+      explicit_defaults_for_timestamp
+      basedir=/opt/bitnami/mariadb
+      plugin_dir=/opt/bitnami/mariadb/plugin
+      port=3306
+      socket=/opt/bitnami/mariadb/tmp/mysql.sock
+      tmpdir=/opt/bitnami/mariadb/tmp
+      max_allowed_packet=16M
+      bind-address=*
+      pid-file=/opt/bitnami/mariadb/tmp/mysqld.pid
+      log-error=/opt/bitnami/mariadb/logs/mysqld.log
+      character-set-server=UTF8
+      collation-server=utf8_general_ci
+      slow_query_log=0
+      long_query_time=10.0
+
+      # ==========================================
+      # Debezium CDC를 위한 Binlog 설정
+      # ==========================================
+
+      # 필수: Binlog 활성화
+      log-bin=mysql-bin
+
+      # 필수: Row 기반 복제 형식
+      binlog-format=ROW
+
+      # 필수: 전체 행 이미지 기록
+      binlog-row-image=FULL
+
+      # 필수: 고유한 서버 ID
+      server-id=1
+
+      # 권장: Binlog 보존 기간 (일 단위)
+      expire-logs-days=7
+
+      # 권장: Binlog 최대 파일 크기
+      max-binlog-size=100M
+
+      # 선택: Binlog 캐시 크기
+      binlog-cache-size=32K
+
+      # 선택: 트랜잭션 격리 수준
+      transaction-isolation=READ-COMMITTED
+
+      # 권장: 동기화 설정
+      sync-binlog=1
+
+      # ==========================================
+
+      [client]
+      port=3306
+      socket=/opt/bitnami/mariadb/tmp/mysql.sock
+      default-character-set=UTF8
+      plugin_dir=/opt/bitnami/mariadb/plugin
+
+      [manager]
+      port=3306
+      socket=/opt/bitnami/mariadb/tmp/mysql.sock
+      pid-file=/opt/bitnami/mariadb/tmp/mysqld.pid
+
+  secondary:
+    replicaCount: 0  # Standalone 모드이므로 0
+
+  architecture: standalone
+
+  metrics:
+    enabled: true
+    image:
+      registry: docker.io
+      repository: bitnamilegacy/mysqld-exporter
+      tag: "0.15.1-debian-12-r28"
+      pullPolicy: IfNotPresent
+    resources:
+      limits:
+        cpu: 100m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+    serviceMonitor:
+      enabled: false
+      namespace: mariadb
+      labels:
+        app: mariadb
+        prometheus: kube-prometheus
+    prometheusRule:
+      enabled: false
+    extraLabels:
+      app: mariadb
+      component: database
+
+  volumePermissions:
+    enabled: true
+    image:
+      registry: docker.io
+      repository: bitnamilegacy/os-shell
+      tag: "12-debian-12-r43"
+      pullPolicy: IfNotPresent
+    resources:
+      limits:
+        cpu: 100m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+
+  initdbScripts:
+    setup_debezium_user.sql: |
+      -- Debezium CDC 전용 사용자 생성
+      CREATE USER IF NOT EXISTS 'skala'@'%' IDENTIFIED BY 'Skala25a!23$';
+
+      -- Debezium 필수 권한 부여
+      GRANT SELECT, RELOAD, SHOW DATABASES, REPLICATION SLAVE, REPLICATION CLIENT
+      ON *.* TO 'skala'@'%';
+
+      -- 특정 데이터베이스에 대한 추가 권한
+      GRANT ALL PRIVILEGES ON cloud.* TO 'skala'@'%';
+
+      -- 변경사항 적용
+      FLUSH PRIVILEGES;
+
+  networkPolicy:
+    enabled: false
+    allowExternal: true
+
+  podSecurityContext:
+    enabled: true
+    fsGroup: 1001
+
+  containerSecurityContext:
+    enabled: true
+    runAsUser: 1001
+    runAsNonRoot: true
+
+  extraEnvVars:
+    - name: MARIADB_EXTRA_FLAGS
+      value: "--log-bin=mysql-bin --binlog-format=ROW --server-id=1"
+    - name: OTEL_SERVICE_NAME
+      value: "mariadb"
+    - name: OTEL_SERVICE_VERSION
+      value: "11.4.6"
+    - name: OTEL_RESOURCE_ATTRIBUTES
+      value: "service.name=mariadb,service.namespace=mariadb,service.version=11.4.6,database.type=mariadb"
+
+  commonLabels:
+    app: mariadb
+    component: database
+    observability: enabled

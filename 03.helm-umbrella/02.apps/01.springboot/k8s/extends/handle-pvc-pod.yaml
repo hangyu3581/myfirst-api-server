@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sk199-pvc-handler-pod
+  namespace: class-3
+spec:
+  containers:
+  - name: ubuntu
+    image: ubuntu:22.04
+    command: ["/bin/bash","-lc","apt-get update && apt-get install -y vim sudo && tail -f /dev/null"]
+    volumeMounts:
+    - name: efs-config
+      mountPath: /config
+  volumes:
+  - name: efs-config
+    persistentVolumeClaim:
+      claimName: sk199-efs-sc-myfirst-api-server-pvc

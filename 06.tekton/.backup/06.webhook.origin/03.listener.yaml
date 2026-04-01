@@ -1,0 +1,14 @@
+apiVersion: triggers.tekton.dev/v1beta1
+kind: EventListener
+metadata:
+  name: sk000-springboot-listener
+  namespace: skala-tekton
+spec:
+  serviceAccountName: pipeline-sa
+  triggers:
+    - name: sk000-springboot-trigger
+      bindings:
+        - ref: sk000-springboot-binding
+      template:
+        ref: sk000-springboot-trigger-template
+

@@ -1,0 +1,8 @@
+apiVersion: tekton.dev/v1beta1
+kind: TaskRun
+metadata:
+  name: sk199-hello-task-run
+  namespace: skala-tekton
+spec:
+  taskRef:
+    name: hello

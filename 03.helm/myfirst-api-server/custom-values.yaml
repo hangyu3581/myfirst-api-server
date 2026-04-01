@@ -1,0 +1,46 @@
+# custom-values.yaml
+# 기본 values.yaml을 오버라이드할 값만 작성합니다.
+# 설치 시 사용법:
+#   helm upgrade --install my-release repo/chart -f custom-values.yaml
+
+# 사용자 이름 (본인 ID로 변경)
+userName: "sk2199"
+
+# 레플리카 수
+replicaCount: 2
+
+# 컨테이너 이미지 설정
+image:
+  repository: amdp-registry.skala-ai.com/skala25a
+  tag: "1.0.0"
+  pullPolicy: Always
+
+# 서비스 설정
+service:
+  type: ClusterIP
+  port: 8080
+
+# Ingress 설정
+ingress:
+  enabled: true
+  className: "public-nginx"
+  host: "ingress.skala25a.project.skala-ai.com"
+  tls:
+    enabled: true
+    clusterIssuer: "letsencrypt-prod"
+
+# 리소스 제한 (운영 환경에서는 반드시 설정 권장)
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# HPA (수평 파드 자동 스케일링)
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: springboot
+description: Spring Boot API Server Sub-chart
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

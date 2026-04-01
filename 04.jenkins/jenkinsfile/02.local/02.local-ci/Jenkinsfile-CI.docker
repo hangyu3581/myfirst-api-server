@@ -1,0 +1,117 @@
+pipeline {
+  agent any
+
+  environment {
+    // === 사용자 수정 영역 ===
+    GIT_URL                = 'https://github.com/himang10/myfirst-api-server.git'
+    GIT_BRANCH             = 'master'            // 또는 main
+    GIT_ID                 = 'skala-github-id'   // GitHub PAT credential ID
+    IMAGE_NAME             = 'sk000-myfirst-api-server'
+    // =======================
+    IMAGE_TAG              = '1.0.0'
+    IMAGE_REGISTRY_URL     = 'amdp-registry.skala-ai.com'
+    IMAGE_REGISTRY_PROJECT = 'skala25a'
+
+    DOCKER_CREDENTIAL_ID   = 'skala-image-registry-id'  // Harbor 인증 정보 ID
+    K8S_NAMESPACE          = 'skala-practice'
+    GITOPS_BRANCH          = 'gitops'
+    GITOPS_MANIFEST        = 'k8s/deploy.yaml'
+  }
+
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+  }
+
+  stages {
+    stage('Clone Repository') {
+      steps {
+        echo 'Clone Repository'
+        git branch: "${GIT_BRANCH}", url: "${GIT_URL}", credentialsId: "${GIT_ID}"
+        sh 'ls -al'
+      }
+    }
+
+    stage('Build with Maven') {
+      steps {
+        echo 'Build with Maven'
+        sh 'mvn clean package -DskipTests'
+        sh 'ls -al'
+      }
+    }
+
+    // 태그/이미지 경로 계산 (메타)
+    stage('Compute Image Meta') {
+      steps {
+        script {
+          //def hashcode = sh(script: "date +%s%N | sha256sum | cut -c1-12", returnStdout: true).trim()
+          //env.FINAL_IMAGE_TAG = "${IMAGE_TAG}-${hashcode}"
+          def uuid = java.util.UUID.randomUUID().toString()
+          env.FINAL_IMAGE_TAG = "${IMAGE_TAG}-${env.BUILD_NUMBER}-${uuid.substring(0,8)}"
+          env.IMAGE_REGISTRY  = "${env.IMAGE_REGISTRY_URL}/${env.IMAGE_REGISTRY_PROJECT}"
+          env.REG_HOST        = env.IMAGE_REGISTRY_URL
+          env.IMAGE_REF       = "${env.IMAGE_REGISTRY}/${IMAGE_NAME}:${env.FINAL_IMAGE_TAG}"
+
+          echo "REG_HOST: ${env.REG_HOST}"
+          echo "IMAGE_REF: ${env.IMAGE_REF}"
+        }
+      }
+    }
+
+    // 로그인/빌드/푸시/정리
+    stage('Image Build & Push (docker)') {
+        steps {
+            script {
+                docker.withRegistry("https://${IMAGE_REGISTRY}", "${DOCKER_CREDENTIAL_ID}") {
+                    def appImage = docker.build("${IMAGE_REF}", "--platform=linux/amd64 .")
+                    appImage.push()
+                }
+            }
+        }
+    }
+
+    // GitOps 업데이트 (ArgoCD CD 트리거) ────────────────
+    // deploy.yaml 이미지 태그 수정 후 gitops 브랜치에 push
+    stage('GitOps Update') {
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: "${GIT_ID}",
+          usernameVariable: 'GIT_USER',
+          passwordVariable: 'GIT_PASS'
+        )]) {
+          script {
+            env.REPO_PATH = env.GIT_URL.replaceFirst(/^https?:\/\//, '')
+          }
+          sh '''
+            set -eux
+            git config --global user.name  "skala-gitops"
+            git config --global user.email "skala@skala-ai.com"
+            git config --global --add safe.directory '*'
+
+            # 1. gitops 브랜치로 전환 (master 기준으로 신규 생성/초기화)
+            git checkout -B "${GITOPS_BRANCH}"
+
+            # 2. deploy.yaml 이미지 태그 업데이트
+            IMAGE_BASE="${IMAGE_REF%:*}"
+            sed -Ei "s|(image:[[:space:]]*)${IMAGE_BASE}:[^[:space:]]*|\\1${IMAGE_REF}|" "${GITOPS_MANIFEST}"
+
+            # 3. 커밋 & 강제 푸시 (원격 gitops 브랜치를 현재 상태로 덮어씀)
+            git add "${GITOPS_MANIFEST}"
+            git commit -m "[AUTO] image: ${IMAGE_NAME}:${FINAL_IMAGE_TAG}"
+            git remote set-url origin "https://${GIT_USER}:${GIT_PASS}@${REPO_PATH}"
+            git push origin "${GITOPS_BRANCH}" --force
+            echo "[DONE] gitops 브랜치 업데이트 완료: ${IMAGE_REF}"
+          '''
+        }
+      }
+    }
+
+  }
+
+  post {
+    always {
+      deleteDir()  // 워크스페이스 정리 (git clone, target/, 빌드 아티팩트)
+    }
+  }
+}
+

@@ -1,0 +1,47 @@
+spring:
+  profiles:
+    default: local
+
+logging:
+  level:
+    root: INFO
+    '[org.hibernate.SQL]': DEBUG
+    '[org.hibernate.type.descriptor.sql.BasicBinder]': DEBUG
+springdoc:
+  swagger-ui:
+    path: /swagger/swagger-ui # Swagger UI 접속 경로 변경
+  api-docs:
+    path: /swagger/swagger-docs
+
+management:
+  server:
+    port: 8080 # Actuator 포트 설정
+  endpoints:
+    web:
+      exposure:
+        include: "*" # Prometheus endpoint 노출
+  endpoint:
+    health:
+      probes:
+        enabled: true # LivenessState, ReadinessState 활성화
+      show-details: always # health 상세 정보 노출
+      show-components: always # 개별 health indicator 컴포넌트 노출
+  health:
+    livenessState:
+        enabled: true # LivenessState 활성화
+    readinessState:
+        enabled: true # ReadinessState 활성화
+  metrics:
+    enable:
+      all: true # 모든 기본 메트릭 활성화
+
+# Health Groups 설정 - liveness와 readiness에 포함될 indicator 정의
+management.endpoint.health.group:
+  readiness:
+    include: readinessState,myService # readiness에 myService 포함
+  liveness:
+    include: livenessState # liveness는 기본만 포함
+
+external:
+  service:
+    url: https://jsonplaceholder.typicode.com # 외부 서비스 URL (자기 자신의 actuator)
