@@ -35,8 +35,7 @@ pipeline {
       steps {
         echo 'Build with Maven'
         dir("${APP_DIR}") {
-          sh 'chmod +x mvnw'
-          sh './mvnw clean package -DskipTests'
+          sh 'mvn clean package -DskipTests'
           sh 'ls -al'
         }
       }
