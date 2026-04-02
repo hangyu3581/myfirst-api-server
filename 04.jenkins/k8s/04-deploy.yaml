@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: sk199-jenkins
-  namespace: skala-practice
+  namespace: class-3
   labels:
     app: sk199-jenkins
 spec:

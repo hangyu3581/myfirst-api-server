@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: sk199-buildah-registries-conf
-  namespace: skala-practice
+  namespace: class-3
   labels:
     app: sk199-jenkins
     component: buildah-config

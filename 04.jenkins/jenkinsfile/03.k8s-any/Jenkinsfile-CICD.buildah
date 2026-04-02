@@ -24,7 +24,7 @@ pipeline {
     IMAGE_REGISTRY_URL     = 'amdp-registry.skala-ai.com'
     IMAGE_REGISTRY_PROJECT = 'skala25a'
     DOCKER_CREDENTIAL_ID   = 'skala-image-registry-id'
-    K8S_NAMESPACE          = 'skala-practice'
+    K8S_NAMESPACE          = 'class-3'
   }
 
   // 동시 실행 방지 + 로그 타임스탬프 출력

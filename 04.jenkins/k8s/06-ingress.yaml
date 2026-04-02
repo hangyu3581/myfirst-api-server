@@ -2,7 +2,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: sk199-jenkins-ingress
-  namespace: skala-practice
+  namespace: class-3
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
     # 대용량 파일 업로드(Pipeline 아티팩트)를 위해 body 크기 제한 해제

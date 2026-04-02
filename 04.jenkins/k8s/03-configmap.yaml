@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: sk199-jenkins-config
-  namespace: skala-practice
+  namespace: class-3
   labels:
     app: sk199-jenkins
     component: config
@@ -139,7 +139,7 @@ data:
         - kubernetes:
             name: "skala"
             serverUrl: ""
-            namespace: "skala-practice"
+            namespace: "class-3"
             jenkinsUrl: "http://sk199-jenkins:8080"
             jenkinsTunnel: "sk199-jenkins-agent:50000"
             connectTimeout: 5
