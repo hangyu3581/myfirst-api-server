@@ -1,15 +1,15 @@
 apiVersion: v1
 kind: Secret
 metadata:
-  name: sk199-git-repo
+  name: sk067-git-repo
   namespace: skala-argocd
   labels:
     argocd.argoproj.io/secret-type: repository
 type: Opaque
 stringData:
-  name: sk199-my-app
+  name: sk067-my-app
   type: git
-  url: https://github.com/himang10/myfirst-api-server.git
-  username: himang10
+  url: https://github.com/hangyu3581/myfirst-api-server.git
+  username: hangyu3581
   project: skala
   password: ${GITHUB_PAT}
