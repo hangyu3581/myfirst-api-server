@@ -9,7 +9,7 @@ type: Opaque
 stringData:
   name: sk067-my-app
   type: git
-  url: https://github.com/hangyu3581/myfirst-api-server.git
+  url: https://github.com/hangyu3581/myfirst-api-server/tree/main/10.myfirst-api-server
   username: hangyu3581
   project: skala
   password: ${GITHUB_PAT}
